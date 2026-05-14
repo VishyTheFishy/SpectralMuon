@@ -30,7 +30,7 @@ def zeropower_via_newtonschulz5(G, steps: int):
         X = X.mT
     return X
 
-def targeted_newtonschulz5(G, steps:int, tau: float = 1):
+def targeted_newtonschulz5(G, steps:int, tau: float = 1.):
     assert G.ndim >= 2
     X = G.bfloat16()
         if G.size(-2) > G.size(-1):
