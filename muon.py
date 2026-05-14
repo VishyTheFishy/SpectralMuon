@@ -30,6 +30,28 @@ def zeropower_via_newtonschulz5(G, steps: int):
         X = X.mT
     return X
 
+def targeted_newtonschulz5(G, steps:int, tau: float = 1):
+    assert G.ndim >= 2
+    X = G.bfloat16()
+        if G.size(-2) > G.size(-1):
+        X = X.mT
+    n = X.size(-2)
+    I = torch.eye(n, dtype=X.dtype, device=X.device) 
+    M = X @ X.mT - tau**2 * I
+    signedM = zeropower_via_newtonschulz5(M, steps)
+    projBot = 0.5 * (I - signedM)
+    projTop = 0.5 * (I + signedM)
+    nsX = zeropower_via_newtonschulz5(X, steps)
+    nsBot = nsX @ projBot + X @ projTop
+    nsTop = nsX @ projTop + X @ projBot
+    if G.size(-2) > G.size(-1):
+        nsBot = nsBot.mT
+        nsTop = nsTop.mT
+    return (nsBot, nsTop)
+
+
+
+
 
 def muon_update(grad, momentum, beta=0.95, ns_steps=5, nesterov=True):
     momentum.lerp_(grad, 1 - beta)
