@@ -33,18 +33,18 @@ def zeropower_via_newtonschulz5(G, steps: int):
 def targeted_newtonschulz5(G, steps:int, tau: float = 1.):
     assert G.ndim >= 2
     X = G.bfloat16()
-        if G.size(-2) > G.size(-1):
+        if G.size(-1) > G.size(-2):
         X = X.mT
-    n = X.size(-2)
+    n = X.size(-1)
     I = torch.eye(n, dtype=X.dtype, device=X.device) 
-    M = X @ X.mT - tau**2 * I
+    M = X.mT @ X - tau**2 * I
     signedM = zeropower_via_newtonschulz5(M, steps)
     projBot = 0.5 * (I - signedM)
     projTop = 0.5 * (I + signedM)
     nsX = zeropower_via_newtonschulz5(X, steps)
     nsBot = nsX @ projBot + X @ projTop
     nsTop = nsX @ projTop + X @ projBot
-    if G.size(-2) > G.size(-1):
+    if G.size(-1) > G.size(-2):
         nsBot = nsBot.mT
         nsTop = nsTop.mT
     return (nsBot, nsTop)
