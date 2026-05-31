@@ -52,7 +52,27 @@ def zeropower_via_newtonschulz5(G, steps=10, eps=1e-7):
         X = X.T
     return X
 
-zeropower_backends = dict(svd=zeropower_via_svd, newtonschulz5=zeropower_via_newtonschulz5)
+def targeted_newtonschulz5(G, steps:int = 3, tau: float = 1.):
+    assert G.ndim >= 2
+    X = G.bfloat16()
+    if G.size(-1) > G.size(-2):
+        X = X.mT
+    n = X.size(-1)
+    I = torch.eye(n, dtype=X.dtype, device=X.device) 
+    M = X.mT @ X - tau**2 * I
+    signedM = zeropower_via_newtonschulz5(M, steps)
+    projBot = 0.5 * (I - signedM)
+    projTop = 0.5 * (I + signedM)
+    nsX = zeropower_via_newtonschulz5(X, steps)
+    nsBot = nsX @ projBot + X @ projTop
+    nsTop = X @ projBot + nsX @ projTop
+    if G.size(-1) > G.size(-2):
+        nsBot = nsBot.mT
+        nsTop = nsTop.mT
+    return nsTop #(nsBot, nsTop)
+
+
+zeropower_backends = dict(svd=zeropower_via_svd, newtonschulz5=zeropower_via_newtonschulz5, targeted=targeted_newtonschulz5)
 
 class Muon(torch.optim.Optimizer):
     """
@@ -80,7 +100,7 @@ class Muon(torch.optim.Optimizer):
         backend_steps: The number of iteration steps to use in the backend, if it is iterative.
     """
     def __init__(self, params, lr=0.02, momentum=0.95, nesterov=True,
-                 backend='newtonschulz5', backend_steps=5):
+                 backend='targeted', backend_steps=5):
         defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, backend=backend, backend_steps=backend_steps)
         super().__init__(params, defaults)
 
