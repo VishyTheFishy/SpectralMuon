@@ -463,6 +463,8 @@ def main(run, model):
     model.init_whiten(train_images)
     stop_timer()
 
+    track_svd = True
+
     for epoch in range(ceil(total_train_steps / len(train_loader))):
 
         ####################
@@ -479,7 +481,10 @@ def main(run, model):
             for group in optimizer1.param_groups[1:]+optimizer2.param_groups:
                 group["lr"] = group["initial_lr"] * (1 - step / total_train_steps)
             for opt in optimizers:
-                opt.step()
+                if isinstance(opt, Muon) and track_svd:
+                    opt.step(svd_prob=0.1)
+                else:
+                    opt.step()
             model.zero_grad(set_to_none=True)
             step += 1
             if step >= total_train_steps:
