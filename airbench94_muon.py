@@ -131,7 +131,7 @@ class Muon(torch.optim.Optimizer):
         defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov)
         super().__init__(params, defaults)
 
-    def step(self, svd_prob=0):
+def step(self, svd_prob=0):
         """
         svd_prob (float): Probability of tracking the spectra on this step. 
                           0.1 means roughly 10% of the steps in an epoch.
@@ -148,18 +148,10 @@ class Muon(torch.optim.Optimizer):
                 
                 state = self.state[p]
 
+                # 1. Track original gradient spectrum
                 if track_svd_this_step:
                     orig_g_mat = p.grad.reshape(len(p.grad), -1).float()
                     orig_g_spectrum = torch.linalg.svdvals(orig_g_mat)
-                    
-                    tangent_grad = project_onto_tangent_space(p.data, p.grad)
-                    grad_norm = p.grad.norm()
-                    
-                    # Avoid division by zero if the gradient is completely flat
-                    if grad_norm > 0:
-                        tangent_percent = (tangent_grad.norm() / grad_norm).item() * 100.0
-                    else:
-                        tangent_percent = 0.0
 
                 if "momentum_buffer" not in state.keys():
                     state["momentum_buffer"] = torch.zeros_like(g)
@@ -169,15 +161,27 @@ class Muon(torch.optim.Optimizer):
 
                 p.data.mul_(len(p.data)**0.5 / p.data.norm()) # normalize the weight
                 
+                # 2. Track parameter spectrum (post-normalization)
                 if track_svd_this_step:
                     p_mat = p.data.reshape(len(p.data), -1).float()
                     p_spectrum = torch.linalg.svdvals(p_mat)
 
+                # 3. Calculate the Muon update
                 update = zeropower_via_newtonschulz5(g.reshape(len(g), -1)).view(g.shape) # whiten the update
                 
+                # 4. Track update spectrum AND tangent projection percentage
                 if track_svd_this_step:
                     update_mat = update.reshape(len(update), -1).float()
                     update_spectrum = torch.linalg.svdvals(update_mat)
+                    
+                    # Calculate percentage of the update in the tangent space
+                    tangent_update = project_onto_tangent_space(p.data, update)
+                    update_norm = update.norm()
+                    
+                    if update_norm > 0:
+                        tangent_percent = (tangent_update.norm() / update_norm).item() * 100.0
+                    else:
+                        tangent_percent = 0.0
 
                     # Initialize lists if they don't exist
                     if "spectra_history" not in state:
@@ -195,6 +199,7 @@ class Muon(torch.optim.Optimizer):
                     
                     # Append the tangent projection percentage
                     state["spectra_history"]["tangent_proj_percent"].append(tangent_percent)    
+                
                 p.data.add_(update, alpha=-lr) # take a step
 #############################################
 #                DataLoader                 #
