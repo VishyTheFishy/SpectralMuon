@@ -563,23 +563,27 @@ def main(run, model):
                     full_dist_param = torch.cat(state["spectra_history"]["param"])
                     full_dist_update = torch.cat(state["spectra_history"]["update"])
                     
+                    # Convert the list of floats to a tensor
+                    full_tangent_proj = torch.tensor(state["spectra_history"]["tangent_proj_percent"])
+                    
                     # Store in our dictionary
                     epoch_spectra_data[name] = {
                         "grad": full_dist_grad,
                         "param": full_dist_param,
-                        "update": full_dist_update
+                        "update": full_dist_update,
+                        "tangent_proj_percent": full_tangent_proj # Added to saved dict
                     }
                     
                     # Clear the lists for the next epoch
                     state["spectra_history"]["orig_grad"].clear()
                     state["spectra_history"]["param"].clear()
                     state["spectra_history"]["update"].clear()
+                    state["spectra_history"]["tangent_proj_percent"].clear() # Cleared list
         
         # Save the dictionary to disk
         if epoch_spectra_data:
             torch.save(epoch_spectra_data, f"spectra_data_epoch_{epoch}.pt")
             print(f"Saved spectra data to spectra_data_epoch_{epoch}.pt")
-
         ####################
         #    Evaluation    #
         ####################
