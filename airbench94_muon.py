@@ -72,6 +72,54 @@ def targeted_newtonschulz5(G, steps:int = 3, tau: float = 1.):
         nsTop = nsTop.mT
     return nsTop #(nsBot, nsTop)
 
+
+# projection of Y onto tangent space of isospectral manifold at point X
+def project_onto_tangent_space(X: torch.Tensor, Y: torch.Tensor, tol: float = 1e-7) -> torch.Tensor:
+    """
+    Calculates the orthogonal projection of matrix Y onto the tangent space 
+    T_X M of the manifold of matrices with the fixed singular values of X.
+    
+    Args:
+        X: The reference matrix of shape (m, n)
+        Y: The target matrix to project, of shape (m, n)
+        tol: Tolerance for evaluating equality of singular values
+        
+    Returns:
+        The projected matrix of shape (m, n)
+    """
+    m, n = X.shape
+    
+    U, S, Vh = torch.linalg.svd(X, full_matrices=True)
+    V = Vh.mH 
+    Y_tilde = U.mH @ Y @ V # using frobenius norm so unitary-invariant
+    
+    # Initialize the transformed projected matrix with zeros (satisfies Rule 4 natively)
+    Z_tilde = torch.zeros_like(Y_tilde)
+    
+    # Pad singular values vector S with zeros to compute indices up to max(m, n)
+    S_pad_m = F.pad(S, (0, max(0, m - len(S))))
+    S_pad_n = F.pad(S, (0, max(0, n - len(S))))
+    
+    sigma_i = S_pad_m.unsqueeze(1)  # shape: (m, 1)
+    sigma_j = S_pad_n.unsqueeze(0)  # shape: (1, n)
+    is_same_sigma = torch.isclose(sigma_i, sigma_j, atol=tol)
+    is_nonzero = sigma_i > tol
+    
+    mask_distinct = ~is_same_sigma
+    mask_repeated_nonzero = is_same_sigma & is_nonzero
+    Z_tilde = torch.where(mask_distinct, Y_tilde, Z_tilde)
+    
+    # pad Y_tilde to a square 
+    max_dim = max(m, n)
+    Y_tilde_sq = F.pad(Y_tilde, (0, max_dim - n, 0, max_dim - m))
+    Y_tilde_skew = 0.5 * (Y_tilde_sq - Y_tilde_sq.mH)
+    Y_tilde_skew = Y_tilde_skew[:m, :n]  # Slice back to original (m, n) dimensions
+    
+    Z_tilde = torch.where(mask_repeated_nonzero, Y_tilde_skew, Z_tilde)
+    Z_tilde.diagonal().fill_(0)
+    
+    return U @ Z_tilde @ Vh
+
 class Muon(torch.optim.Optimizer):
     def __init__(self, params, lr=1e-3, momentum=0, nesterov=False):
         if lr < 0.0:
@@ -84,59 +132,70 @@ class Muon(torch.optim.Optimizer):
         super().__init__(params, defaults)
 
     def step(self, svd_prob=0):
-            """
-            svd_prob (float): Probability of tracking the spectra on this step. 
-                              0.1 means roughly 10% of the steps in an epoch.
-            """
-            track_svd_this_step = random.random() < svd_prob
-    
-            for group in self.param_groups:
-                lr = group["lr"]
-                momentum = group["momentum"]
-                for p in group["params"]:
-                    g = p.grad
-                    if g is None:
-                        continue
+        """
+        svd_prob (float): Probability of tracking the spectra on this step. 
+                          0.1 means roughly 10% of the steps in an epoch.
+        """
+        track_svd_this_step = random.random() < svd_prob
+
+        for group in self.param_groups:
+            lr = group["lr"]
+            momentum = group["momentum"]
+            for p in group["params"]:
+                g = p.grad
+                if g is None:
+                    continue
+                
+                state = self.state[p]
+
+                if track_svd_this_step:
+                    orig_g_mat = p.grad.reshape(len(p.grad), -1).float()
+                    orig_g_spectrum = torch.linalg.svdvals(orig_g_mat)
                     
-                    state = self.state[p]
-    
-                    if track_svd_this_step:
-                        orig_g_mat = p.grad.reshape(len(p.grad), -1).float()
-                        orig_g_spectrum = torch.linalg.svdvals(orig_g_mat)
-    
-                    if "momentum_buffer" not in state.keys():
-                        state["momentum_buffer"] = torch.zeros_like(g)
-                    buf = state["momentum_buffer"]
-                    buf.mul_(momentum).add_(g)
-                    g = g.add(buf, alpha=momentum) if group["nesterov"] else buf
-    
-                    p.data.mul_(len(p.data)**0.5 / p.data.norm()) # normalize the weight
+                    tangent_grad = project_onto_tangent_space(p.data, p.grad)
+                    grad_norm = p.grad.norm()
                     
-                    # 2. Conditionally calculate spectrum of the param matrix
-                    if track_svd_this_step:
-                        p_mat = p.data.reshape(len(p.data), -1).float()
-                        p_spectrum = torch.linalg.svdvals(p_mat)
-    
-                    update = zeropower_via_newtonschulz5(g.reshape(len(g), -1)).view(g.shape) # whiten the update
+                    # Avoid division by zero if the gradient is completely flat
+                    if grad_norm > 0:
+                        tangent_percent = (tangent_grad.norm() / grad_norm).item() * 100.0
+                    else:
+                        tangent_percent = 0.0
+
+                if "momentum_buffer" not in state.keys():
+                    state["momentum_buffer"] = torch.zeros_like(g)
+                buf = state["momentum_buffer"]
+                buf.mul_(momentum).add_(g)
+                g = g.add(buf, alpha=momentum) if group["nesterov"] else buf
+
+                p.data.mul_(len(p.data)**0.5 / p.data.norm()) # normalize the weight
+                
+                if track_svd_this_step:
+                    p_mat = p.data.reshape(len(p.data), -1).float()
+                    p_spectrum = torch.linalg.svdvals(p_mat)
+
+                update = zeropower_via_newtonschulz5(g.reshape(len(g), -1)).view(g.shape) # whiten the update
+                
+                if track_svd_this_step:
+                    update_mat = update.reshape(len(update), -1).float()
+                    update_spectrum = torch.linalg.svdvals(update_mat)
+
+                    # Initialize lists if they don't exist
+                    if "spectra_history" not in state:
+                        state["spectra_history"] = {
+                            "orig_grad": [],
+                            "param": [],
+                            "update": [],
+                            "tangent_proj_percent": []
+                        }
                     
-                    if track_svd_this_step:
-                        update_mat = update.reshape(len(update), -1).float()
-                        update_spectrum = torch.linalg.svdvals(update_mat)
-    
-                        # Initialize lists if they don't exist
-                        if "spectra_history" not in state:
-                            state["spectra_history"] = {
-                                "orig_grad": [],
-                                "param": [],
-                                "update": []
-                            }
-                        
-                        # Detach, move to CPU, and append
-                        state["spectra_history"]["orig_grad"].append(orig_g_spectrum.detach().cpu())
-                        state["spectra_history"]["param"].append(p_spectrum.detach().cpu())
-                        state["spectra_history"]["update"].append(update_spectrum.detach().cpu())
-    
-                    p.data.add_(update, alpha=-lr) # take a step
+                    # Detach, move to CPU, and append
+                    state["spectra_history"]["orig_grad"].append(orig_g_spectrum.detach().cpu())
+                    state["spectra_history"]["param"].append(p_spectrum.detach().cpu())
+                    state["spectra_history"]["update"].append(update_spectrum.detach().cpu())
+                    
+                    # Append the tangent projection percentage
+                    state["spectra_history"]["tangent_proj_percent"].append(tangent_percent)    
+                p.data.add_(update, alpha=-lr) # take a step
 #############################################
 #                DataLoader                 #
 #############################################
