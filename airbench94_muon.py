@@ -64,8 +64,14 @@ def targeted_newtonschulz5(G, steps:int = 3, tau: float = 1., return_top: bool =
         nsTop = nsTop.mT
     return nsTop if return_top else nsBot
 
+# project Y onto isospectral manifold tangent space at X
 def project_onto_tangent_space(X: torch.Tensor, Y: torch.Tensor, tol: float = 1e-7) -> torch.Tensor:
     orig_shape = X.shape
+    orig_dtype = X.dtype  # Remember if it was float16/half
+    
+    # Cast to float32 to prevent PyTorch CUDA SVD Half-precision crash
+    X = X.float()
+    Y = Y.float()
     
     if X.ndim == 1:
         X = X.reshape(-1, 1)
@@ -102,8 +108,10 @@ def project_onto_tangent_space(X: torch.Tensor, Y: torch.Tensor, tol: float = 1e
     Z_tilde = torch.where(mask_repeated_nonzero, Y_tilde_skew, Z_tilde)
     Z_tilde.diagonal().fill_(0)
     
-    return (U @ Z_tilde @ Vh).reshape(orig_shape)
-
+    result = (U @ Z_tilde @ Vh).reshape(orig_shape)
+    
+    # Cast back to the original datatype (e.g. float16) before returning
+    return result.to(orig_dtype)
 
 class TrackedSGD(torch.optim.Optimizer):
     def __init__(self, params, lr=1e-3, momentum=0, nesterov=False, weight_decay=0.0):
