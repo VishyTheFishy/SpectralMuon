@@ -22,6 +22,7 @@ import torch.nn.functional as F
 import torchvision
 import torchvision.transforms as T
 import matplotlib.pyplot as plt
+import numpy as np
 
 torch.backends.cudnn.benchmark = True
 
@@ -160,7 +161,7 @@ class TrackedSGD(torch.optim.Optimizer):
                     
                     tangent_update = project_onto_tangent_space(p.data, update)
                     update_norm = update.norm()
-                    tangent_percent = -torch.log(1-(tangent_update.norm() / update_norm).item()) if update_norm > 0 else 0.0
+                    tangent_percent = -np.log(1-(tangent_update.norm() / update_norm).item()) if update_norm > 0 else 0.0
 
 
                     if "spectra_history" not in state:
