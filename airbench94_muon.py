@@ -696,8 +696,8 @@ if __name__ == "__main__":
     configurations = [
         {"name": "Tracked_SGD", "config": {"type": "sgd"}},
         {"name": "Muon_Standard", "config": {"type": "muon"}},
-        {"name": "Muon_Targeted_Bot", "config": {"type": "muon_targeted", "tau": 1., "return_top": False}},
-        {"name": "Muon_Targeted_Top", "config": {"type": "muon_targeted", "tau": 1., "return_top": True}}
+        {"name": "Muon_Targeted_Bot", "config": {"type": "muon_targeted", "tau": 0.5, "return_top": False}},
+        {"name": "Muon_Targeted_Top", "config": {"type": "muon_targeted", "tau": 0.5, "return_top": True}}
     ]
 
     run_names = []
