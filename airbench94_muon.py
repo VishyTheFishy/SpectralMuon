@@ -615,36 +615,50 @@ def plot_results(run_names):
     """Generates comparison plots for the ablation runs."""
     plt.figure(figsize=(15, 6))
     
-    # BUGFIX: Ensure we grab a Convolutional layer. 
-    # Bias layers only have 1 singular value and will crash/plot incorrectly.
+    # Load sample data to determine the layers
     sample_data = torch.load(f"{run_names[0]}_spectra.pt", weights_only=False)
     conv_layers = [k for k in sample_data.keys() if "conv" in k]
-    target_layer = conv_layers[0] if conv_layers else list(sample_data.keys())[0]
     
-    print(f"Plotting analytics for representative layer: {target_layer}")
-
-    # Plot 1: Tangent Projection Percentage
+    # Ensure we actually found convolutional layers to avoid crashes
+    if not conv_layers:
+        conv_layers = list(sample_data.keys())
+        
+    # --- Plot 1: Average Tangent Projection Percentage (All Layers) ---
     plt.subplot(1, 2, 1)
     for run in run_names:
         data = torch.load(f"{run}_spectra.pt", weights_only=False)
-        tangent_pct = data[target_layer]["tangent_proj_percent"].numpy()
-        plt.plot(tangent_pct, label=run, alpha=0.8)
+        
+        layer_pcts = []
+        for layer in conv_layers:
+            layer_pcts.append(data[layer]["tangent_proj_percent"])
+            
+        # Stack all layer tensors and take the mean across the layer dimension (dim=0)
+        avg_tangent_pct = torch.stack(layer_pcts).mean(dim=0).numpy()
+        plt.plot(avg_tangent_pct, label=run, alpha=0.8)
     
-    plt.title(f"Tangent Projection Percentage Over Time\n({target_layer})")
+    plt.title("Average Tangent Projection Percentage\n(Mean of All Conv Layers)")
     plt.xlabel("Tracking Step (SVD Sample)")
-    plt.ylabel("% of Update in Tangent Space")
+    plt.ylabel("Log-Barrier of Update in Tangent Space")
     plt.grid(True, linestyle="--", alpha=0.5)
     plt.legend()
 
-    # Plot 2: Mean Update Spectrum
+    # --- Plot 2: Final Update Spectrum of a Middle Layer ---
     plt.subplot(1, 2, 2)
+    # Pick the layer right in the middle of our list
+    middle_layer_idx = len(conv_layers) // 2
+    middle_layer = conv_layers[middle_layer_idx]
+    
+    print(f"Plotting analytics for middle layer: {middle_layer}")
+
     for run in run_names:
         data = torch.load(f"{run}_spectra.pt", weights_only=False)
-        update_spectra = data[target_layer]["update"] # Shape: [Steps, SingularValues]
-        mean_update_spectrum = update_spectra.mean(dim=0).numpy()
-        plt.plot(mean_update_spectrum, label=run, linewidth=2)
+        update_spectra = data[middle_layer]["update"] # Shape: [Steps, SingularValues]
         
-    plt.title(f"Mean Singular Values of the Update\n({target_layer})")
+        # Grab the spectrum at the final recorded step (-1) instead of the mean
+        final_update_spectrum = update_spectra[-1].numpy()
+        plt.plot(final_update_spectrum, label=run, linewidth=2)
+        
+    plt.title(f"Final Singular Values of the Update\n({middle_layer})")
     plt.xlabel("Singular Value Index")
     plt.ylabel("Magnitude")
     plt.grid(True, linestyle="--", alpha=0.5)
@@ -654,7 +668,6 @@ def plot_results(run_names):
     plt.savefig("optimizer_ablation_comparison.png", dpi=300)
     print("Saved comparison plots to 'optimizer_ablation_comparison.png'")
     plt.show()
-
 if __name__ == "__main__":
     model = CifarNet().cuda().to(memory_format=torch.channels_last)
     model.compile(mode="max-autotune")
