@@ -72,16 +72,16 @@ def targeted_newtonschulz5(G, steps:int = 3, tau: float = 1., return_top: bool =
 def project_onto_tangent_space(X: torch.Tensor, Y: torch.Tensor, tol: float = 1e-7) -> torch.Tensor:
     orig_shape = X.shape
     
-    # Safeguard for 1D tensors (e.g. biases) to allow SVD math to execute
-    if X.ndim == 1:
-        X = X.view(-1, 1)
-        Y = Y.view(-1, 1)
+    # Unify all dimensions (1D biases, 2D linear, 4D conv) into 2D matrices
+    # X.shape[0] acts as 'm', and the rest of the dimensions are flattened into 'n'
+    X_2d = X.view(X.shape[0], -1)
+    Y_2d = Y.view(Y.shape[0], -1)
         
-    m, n = X.shape
+    m, n = X_2d.shape
     
-    U, S, Vh = torch.linalg.svd(X, full_matrices=True)
+    U, S, Vh = torch.linalg.svd(X_2d, full_matrices=True)
     V = Vh.mH 
-    Y_tilde = U.mH @ Y @ V # using frobenius norm so unitary-invariant
+    Y_tilde = U.mH @ Y_2d @ V # using frobenius norm so unitary-invariant
     
     # Initialize the transformed projected matrix with zeros
     Z_tilde = torch.zeros_like(Y_tilde)
@@ -108,8 +108,8 @@ def project_onto_tangent_space(X: torch.Tensor, Y: torch.Tensor, tol: float = 1e
     Z_tilde = torch.where(mask_repeated_nonzero, Y_tilde_skew, Z_tilde)
     Z_tilde.diagonal().fill_(0)
     
+    # Project back and restore the original 1D/2D/4D shape
     return (U @ Z_tilde @ Vh).view(orig_shape)
-
 
 class TrackedSGD(torch.optim.Optimizer):
     def __init__(self, params, lr=1e-3, momentum=0, nesterov=False, weight_decay=0.0):
