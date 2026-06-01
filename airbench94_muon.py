@@ -613,7 +613,8 @@ def train_run(run_name, opt_config, model):
 
 def plot_results(run_names):
     """Generates comparison plots for the ablation runs."""
-    plt.figure(figsize=(15, 6))
+    # Widened figure to accommodate 3 plots
+    plt.figure(figsize=(18, 5))
     
     # Load sample data to determine the layers
     sample_data = torch.load(f"{run_names[0]}_spectra.pt", weights_only=False)
@@ -623,8 +624,13 @@ def plot_results(run_names):
     if not conv_layers:
         conv_layers = list(sample_data.keys())
         
+    # Pick the layer right in the middle of our list
+    middle_layer_idx = len(conv_layers) // 2
+    middle_layer = conv_layers[middle_layer_idx]
+    print(f"Plotting analytics for middle layer: {middle_layer}")
+        
     # --- Plot 1: Average Tangent Projection Percentage (All Layers) ---
-    plt.subplot(1, 2, 1)
+    plt.subplot(1, 3, 1)
     for run in run_names:
         data = torch.load(f"{run}_spectra.pt", weights_only=False)
         
@@ -643,18 +649,12 @@ def plot_results(run_names):
     plt.legend()
 
     # --- Plot 2: Final Update Spectrum of a Middle Layer ---
-    plt.subplot(1, 2, 2)
-    # Pick the layer right in the middle of our list
-    middle_layer_idx = len(conv_layers) // 2
-    middle_layer = conv_layers[middle_layer_idx]
-    
-    print(f"Plotting analytics for middle layer: {middle_layer}")
-
+    plt.subplot(1, 3, 2)
     for run in run_names:
         data = torch.load(f"{run}_spectra.pt", weights_only=False)
         update_spectra = data[middle_layer]["update"] # Shape: [Steps, SingularValues]
         
-        # Grab the spectrum at the final recorded step (-1) instead of the mean
+        # Grab the spectrum at the final recorded step (-1)
         final_update_spectrum = update_spectra[-1].numpy()
         plt.plot(final_update_spectrum, label=run, linewidth=2)
         
@@ -664,11 +664,29 @@ def plot_results(run_names):
     plt.grid(True, linestyle="--", alpha=0.5)
     plt.legend()
 
+    # --- Plot 3: Final Weight Spectrum of a Middle Layer ---
+    plt.subplot(1, 3, 3)
+    for run in run_names:
+        data = torch.load(f"{run}_spectra.pt", weights_only=False)
+        weight_spectra = data[middle_layer]["param"] # Shape: [Steps, SingularValues]
+        
+        # Grab the spectrum of the weights at the final recorded step (-1)
+        final_weight_spectrum = weight_spectra[-1].numpy()
+        plt.plot(final_weight_spectrum, label=run, linewidth=2)
+        
+    plt.title(f"Final Singular Values of the Weight Matrix\n({middle_layer})")
+    plt.xlabel("Singular Value Index")
+    plt.ylabel("Magnitude")
+    plt.grid(True, linestyle="--", alpha=0.5)
+    plt.legend()
+
     plt.tight_layout()
     plt.savefig("optimizer_ablation_comparison.png", dpi=300)
     print("Saved comparison plots to 'optimizer_ablation_comparison.png'")
     plt.show()
-if __name__ == "__main__":
+
+
+    if __name__ == "__main__":
     model = CifarNet().cuda().to(memory_format=torch.channels_last)
     model.compile(mode="max-autotune")
     print_columns(logging_columns_list, is_head=True)
