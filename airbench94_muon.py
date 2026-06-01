@@ -686,7 +686,7 @@ def plot_results(run_names):
     plt.show()
 
 
-    if __name__ == "__main__":
+if __name__ == "__main__":
     model = CifarNet().cuda().to(memory_format=torch.channels_last)
     model.compile(mode="max-autotune")
     print_columns(logging_columns_list, is_head=True)
