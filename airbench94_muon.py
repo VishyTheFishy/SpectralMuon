@@ -559,6 +559,7 @@ def train_run(run_name, opt_config, model):
         for inputs, labels in train_loader:
             outputs = model(inputs, whiten_bias_grad=(step < whiten_bias_train_steps))
             F.cross_entropy(outputs, labels, label_smoothing=0.2, reduction="sum").backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             for group in optimizer1.param_groups[:1]:
                 group["lr"] = group["initial_lr"] * (1 - step / whiten_bias_train_steps)
             for group in optimizer1.param_groups[1:]+optimizer2.param_groups:
