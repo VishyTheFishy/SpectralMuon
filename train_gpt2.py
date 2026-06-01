@@ -73,6 +73,41 @@ def targeted_newtonschulz5(G, steps:int = 3, tau: float = 1.):
         nsTop = nsTop.mT
     return nsTop #(nsBot, nsTop)
 
+def targeted_top_newtonschulz5(G, steps:int = 3, tau: float = 1.):
+    assert G.ndim >= 2
+    X = G.bfloat16()
+    if G.size(-1) > G.size(-2):
+        X = X.mT
+    n = X.size(-1)
+    I = torch.eye(n, dtype=X.dtype, device=X.device) 
+    M = X.mT @ X - tau**2 * I
+    signedM = zeropower_via_newtonschulz5(M, steps)
+    projBot = 0.5 * (I - signedM)
+    projTop = 0.5 * (I + signedM)
+    nsX = zeropower_via_newtonschulz5(X, steps)
+    nsTop = X @ projBot + nsX @ projTop
+    if G.size(-1) > G.size(-2):
+        nsTop = nsTop.mT
+    return nsTop
+
+def targeted_bot_newtonschulz5(G, steps:int = 3, tau: float = 1.):
+    assert G.ndim >= 2
+    X = G.bfloat16()
+    if G.size(-1) > G.size(-2):
+        X = X.mT
+    n = X.size(-1)
+    I = torch.eye(n, dtype=X.dtype, device=X.device) 
+    M = X.mT @ X - tau**2 * I
+    signedM = zeropower_via_newtonschulz5(M, steps)
+    projBot = 0.5 * (I - signedM)
+    projTop = 0.5 * (I + signedM)
+    nsX = zeropower_via_newtonschulz5(X, steps)
+    nsBot = nsX @ projBot + X @ projTop
+    if G.size(-1) > G.size(-2):
+        nsBot = nsBot.mT
+    return nsBot
+
+
 def compute_effective_rank(svds):
     nuc = svds.sum()
     if(nuc == 0):
@@ -82,7 +117,7 @@ def compute_effective_rank(svds):
     return torch.exp((-p*torch.log(p)).sum())
 
 
-zeropower_backends = dict(svd=zeropower_via_svd, newtonschulz5=zeropower_via_newtonschulz5, targeted=targeted_newtonschulz5)
+zeropower_backends = dict(svd=zeropower_via_svd, newtonschulz5=zeropower_via_newtonschulz5, targeted_top=targeted_top_newtonschulz5, targeted_bot=targeted_bot_newtonschulz5, identity=torch.nn.Identity)
 
 class Muon(torch.optim.Optimizer):
     """
@@ -112,11 +147,10 @@ class Muon(torch.optim.Optimizer):
     def __init__(self, params, lr=0.02, momentum=0.95, nesterov=True,
                  backend='targeted', backend_steps=5):
         defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, backend=backend, backend_steps=backend_steps)
-        self._step_= 0 
+        self._step= 0 
         super().__init__(params, defaults)
 
     def step(self):
-        self._step += 1
 
         for group in self.param_groups:
 
@@ -163,6 +197,8 @@ class Muon(torch.optim.Optimizer):
                 g = updates_flat[curr_idx:curr_idx+p.numel()].view_as(p.data).type_as(p.data)
                 p.data.add_(g, alpha=-lr)
                 curr_idx += p.numel()
+        self._step += 1
+
 
 # -----------------------------------------------------------------------------
 # PyTorch nn.Module definitions for the GPT-2 model
