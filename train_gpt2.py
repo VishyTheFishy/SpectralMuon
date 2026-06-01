@@ -117,7 +117,7 @@ def compute_effective_rank(svds):
     return torch.exp((-p*torch.log(p)).sum())
 
 
-zeropower_backends = dict(svd=zeropower_via_svd, newtonschulz5=zeropower_via_newtonschulz5, targeted_top=targeted_top_newtonschulz5, targeted_bot=targeted_bot_newtonschulz5, identity=torch.nn.Identity)
+zeropower_backends = dict(svd=zeropower_via_svd, newtonschulz5=zeropower_via_newtonschulz5, targeted_top=targeted_top_newtonschulz5, targeted_bot=targeted_bot_newtonschulz5, identity=torch.nn.Identity())
 
 class Muon(torch.optim.Optimizer):
     """
@@ -182,7 +182,7 @@ class Muon(torch.optim.Optimizer):
                     g = zeropower_backend(g, steps=group['backend_steps'])
                     g *= max(1, g.size(0)/g.size(1))**0.5
                     if self._step % 20 == 0:
-                        u_svds = torch.linalg.svdvals(g)
+                        u_svds = torch.linalg.svdvals(g.detach().float())
                         run.log({"u_erank": compute_effective_rank(u_svds).item()})
 
                     updates_flat[curr_idx:curr_idx+p.numel()] = g.flatten()
