@@ -655,10 +655,10 @@ def plot_results(run_names):
         update_spectra = data[middle_layer]["update"] # Shape: [Steps, SingularValues]
         
         # Grab the spectrum at the final recorded step (-1)
-        final_update_spectrum = update_spectra[-1].numpy()
+        final_update_spectrum = update_spectra[0].numpy()
         plt.plot(final_update_spectrum, label=run, linewidth=2)
         
-    plt.title(f"Final Singular Values of the Update\n({middle_layer})")
+    plt.title(f"First Singular Values of the Update\n({middle_layer})")
     plt.xlabel("Singular Value Index")
     plt.ylabel("Magnitude")
     plt.grid(True, linestyle="--", alpha=0.5)
@@ -671,10 +671,10 @@ def plot_results(run_names):
         weight_spectra = data[middle_layer]["param"] # Shape: [Steps, SingularValues]
         
         # Grab the spectrum of the weights at the final recorded step (-1)
-        final_weight_spectrum = weight_spectra[-1].numpy()
+        final_weight_spectrum = weight_spectra[0].numpy()
         plt.plot(final_weight_spectrum, label=run, linewidth=2)
         
-    plt.title(f"Final Singular Values of the Weight Matrix\n({middle_layer})")
+    plt.title(f"First Singular Values of the Weight Matrix\n({middle_layer})")
     plt.xlabel("Singular Value Index")
     plt.ylabel("Magnitude")
     plt.grid(True, linestyle="--", alpha=0.5)
