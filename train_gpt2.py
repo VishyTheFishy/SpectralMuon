@@ -71,6 +71,14 @@ def targeted_newtonschulz5(G, steps:int = 3, tau: float = 1.):
         nsTop = nsTop.mT
     return nsTop #(nsBot, nsTop)
 
+def compute_effective_rank(svds):
+    nuc = svds.sum()
+    if(nuc == 0):
+        return 0
+    p = svds/nuc
+    p = p[p > 0]
+    return torch.exp((-p*torch.log(p)).sum())
+
 
 zeropower_backends = dict(svd=zeropower_via_svd, newtonschulz5=zeropower_via_newtonschulz5, targeted=targeted_newtonschulz5)
 
@@ -102,9 +110,11 @@ class Muon(torch.optim.Optimizer):
     def __init__(self, params, lr=0.02, momentum=0.95, nesterov=True,
                  backend='targeted', backend_steps=5):
         defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, backend=backend, backend_steps=backend_steps)
+        self._step_= 0 
         super().__init__(params, defaults)
 
     def step(self):
+        self._step += 1
 
         for group in self.param_groups:
 
@@ -120,6 +130,14 @@ class Muon(torch.optim.Optimizer):
                 # luckily this will perfectly distribute a transformer with multiple of 4 layers to 8 GPUs
                 if i % int(os.environ['WORLD_SIZE']) == int(os.environ['RANK']):
                     g = p.grad
+                    if self._step % 20 == 0:
+                        p_svds = torch.linalg.svdvals(p)
+                        g_svds = torch.linalg.svdvals(g)
+                        with open(f"spec_log/p_eranks{self._step}.txt", "a") as file:
+                            file.write(compute_effective_rank(p_svds))
+                        with open(f"spec_log/g_eranks{self._step}.txt", "a") as file:
+                            file.write(compute_effective_rank(g_svds))
+
                     assert g is not None
                     state = self.state[p]
                     if 'momentum_buffer' not in state:
