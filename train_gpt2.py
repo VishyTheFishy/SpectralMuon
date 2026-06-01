@@ -111,7 +111,7 @@ def targeted_bot_newtonschulz5(G, steps:int = 3, tau: float = 1.):
 def compute_effective_rank(svds):
     nuc = svds.sum()
     if(nuc == 0):
-        return 0
+        return torch.tensor(0.0, device=svds.device)
     p = svds/nuc
     p = p[p > 0]
     return torch.exp((-p*torch.log(p)).sum())
