@@ -180,7 +180,7 @@ class Muon(torch.optim.Optimizer):
                     buf.mul_(momentum).add_(g)
                     g = g.add(buf, alpha=momentum) if group['nesterov'] else buf
                     with open("mmt_grads.txt", 'a') as file:
-                        file.write(g)
+                        file.write(str(torch.linalg.svdvals(g)))
                     g = zeropower_backend(g, steps=group['backend_steps'])
                     g *= max(1, g.size(0)/g.size(1))**0.5
                     if self._step % 100 == 0:
