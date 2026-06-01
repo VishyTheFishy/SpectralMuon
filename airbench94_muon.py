@@ -1,11 +1,11 @@
-"""
+"""""
 airbench94_muon.py
 Runs in 2.59 seconds on a 400W NVIDIA A100 using torch==2.4.1
 Attains 94.01 mean accuracy (n=200 trials)
 Descends from https://github.com/tysam-code/hlb-CIFAR10/blob/main/main.py
 """
 #############################################
-#                  Setup                    #
+#                 Setup                     #
 #############################################
 
 import os
@@ -21,6 +21,7 @@ from torch import nn
 import torch.nn.functional as F
 import torchvision
 import torchvision.transforms as T
+import matplotlib.pyplot as plt
 
 torch.backends.cudnn.benchmark = True
 
@@ -31,13 +32,7 @@ torch.backends.cudnn.benchmark = True
 @torch.compile
 def zeropower_via_newtonschulz5(G, steps=3, eps=1e-7):
     """
-    Newton-Schulz iteration to compute the zeroth power / orthogonalization of G. We opt to use a
-    quintic iteration whose coefficients are selected to maximize the slope at zero. For the purpose
-    of minimizing steps, it turns out to be empirically effective to keep increasing the slope at
-    zero even beyond the point where the iteration no longer converges all the way to one everywhere
-    on the interval. This iteration therefore does not produce UV^T but rather something like US'V^T
-    where S' is diagonal with S_{ii}' \sim Uniform(0.5, 1.5), which turns out not to hurt model
-    performance at all relative to UV^T, where USV^T = G is the SVD.
+    Newton-Schulz iteration to compute the zeroth power / orthogonalization of G.
     """
     assert len(G.shape) == 2
     a, b, c = (3.4445, -4.7750,  2.0315)
@@ -53,7 +48,7 @@ def zeropower_via_newtonschulz5(G, steps=3, eps=1e-7):
         X = X.T
     return X
     
-def targeted_newtonschulz5(G, steps:int = 3, tau: float = 1.):
+def targeted_newtonschulz5(G, steps:int = 3, tau: float = 1., return_top: bool = True):
     assert G.ndim >= 2
     X = G.bfloat16()
     if G.size(-1) > G.size(-2):
@@ -70,30 +65,25 @@ def targeted_newtonschulz5(G, steps:int = 3, tau: float = 1.):
     if G.size(-1) > G.size(-2):
         nsBot = nsBot.mT
         nsTop = nsTop.mT
-    return nsTop #(nsBot, nsTop)
+    return nsTop if return_top else nsBot
 
 
 # projection of Y onto tangent space of isospectral manifold at point X
 def project_onto_tangent_space(X: torch.Tensor, Y: torch.Tensor, tol: float = 1e-7) -> torch.Tensor:
-    """
-    Calculates the orthogonal projection of matrix Y onto the tangent space 
-    T_X M of the manifold of matrices with the fixed singular values of X.
+    orig_shape = X.shape
     
-    Args:
-        X: The reference matrix of shape (m, n)
-        Y: The target matrix to project, of shape (m, n)
-        tol: Tolerance for evaluating equality of singular values
+    # Safeguard for 1D tensors (e.g. biases) to allow SVD math to execute
+    if X.ndim == 1:
+        X = X.view(-1, 1)
+        Y = Y.view(-1, 1)
         
-    Returns:
-        The projected matrix of shape (m, n)
-    """
     m, n = X.shape
     
     U, S, Vh = torch.linalg.svd(X, full_matrices=True)
     V = Vh.mH 
     Y_tilde = U.mH @ Y @ V # using frobenius norm so unitary-invariant
     
-    # Initialize the transformed projected matrix with zeros (satisfies Rule 4 natively)
+    # Initialize the transformed projected matrix with zeros
     Z_tilde = torch.zeros_like(Y_tilde)
     
     # Pad singular values vector S with zeros to compute indices up to max(m, n)
@@ -113,29 +103,86 @@ def project_onto_tangent_space(X: torch.Tensor, Y: torch.Tensor, tol: float = 1e
     max_dim = max(m, n)
     Y_tilde_sq = F.pad(Y_tilde, (0, max_dim - n, 0, max_dim - m))
     Y_tilde_skew = 0.5 * (Y_tilde_sq - Y_tilde_sq.mH)
-    Y_tilde_skew = Y_tilde_skew[:m, :n]  # Slice back to original (m, n) dimensions
+    Y_tilde_skew = Y_tilde_skew[:m, :n]  # Slice back to original dimensions
     
     Z_tilde = torch.where(mask_repeated_nonzero, Y_tilde_skew, Z_tilde)
     Z_tilde.diagonal().fill_(0)
     
-    return U @ Z_tilde @ Vh
+    return (U @ Z_tilde @ Vh).view(orig_shape)
 
-class Muon(torch.optim.Optimizer):
-    def __init__(self, params, lr=1e-3, momentum=0, nesterov=False):
+
+class TrackedSGD(torch.optim.Optimizer):
+    def __init__(self, params, lr=1e-3, momentum=0, nesterov=False, weight_decay=0.0):
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
-        if momentum < 0.0:
-            raise ValueError(f"Invalid momentum value: {momentum}")
-        if nesterov and momentum <= 0:
-            raise ValueError("Nesterov momentum requires a momentum")
-        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov)
+        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, weight_decay=weight_decay)
         super().__init__(params, defaults)
 
-def step(self, svd_prob=0):
-        """
-        svd_prob (float): Probability of tracking the spectra on this step. 
-                          0.1 means roughly 10% of the steps in an epoch.
-        """
+    def step(self, svd_prob=0):
+        track_svd_this_step = random.random() < svd_prob
+
+        for group in self.param_groups:
+            lr = group["lr"]
+            momentum = group["momentum"]
+            weight_decay = group.get("weight_decay", 0.0)
+            
+            for p in group["params"]:
+                g = p.grad
+                if g is None:
+                    continue
+                
+                state = self.state[p]
+
+                # 1. Track original gradient spectrum (Before WD application)
+                if track_svd_this_step:
+                    orig_g_mat = g.reshape(len(g), -1).float()
+                    orig_g_spectrum = torch.linalg.svdvals(orig_g_mat)
+
+                if weight_decay != 0:
+                    g = g.add(p.data, alpha=weight_decay)
+
+                if "momentum_buffer" not in state.keys():
+                    state["momentum_buffer"] = torch.zeros_like(g)
+                buf = state["momentum_buffer"]
+                buf.mul_(momentum).add_(g)
+                g = g.add(buf, alpha=momentum) if group["nesterov"] else buf
+
+                # 2. Track parameter spectrum
+                if track_svd_this_step:
+                    p_mat = p.data.reshape(len(p.data), -1).float()
+                    p_spectrum = torch.linalg.svdvals(p_mat)
+
+                # 3. Calculate the update (Pure SGD)
+                update = g 
+                
+                # 4. Track update spectrum AND tangent projection percentage
+                if track_svd_this_step:
+                    update_mat = update.reshape(len(update), -1).float()
+                    update_spectrum = torch.linalg.svdvals(update_mat)
+                    
+                    tangent_update = project_onto_tangent_space(p.data, update)
+                    update_norm = update.norm()
+                    tangent_percent = (tangent_update.norm() / update_norm).item() * 100.0 if update_norm > 0 else 0.0
+
+                    if "spectra_history" not in state:
+                        state["spectra_history"] = {"orig_grad": [], "param": [], "update": [], "tangent_proj_percent": []}
+                    
+                    state["spectra_history"]["orig_grad"].append(orig_g_spectrum.detach().cpu())
+                    state["spectra_history"]["param"].append(p_spectrum.detach().cpu())
+                    state["spectra_history"]["update"].append(update_spectrum.detach().cpu())
+                    state["spectra_history"]["tangent_proj_percent"].append(tangent_percent)    
+                
+                p.data.add_(update, alpha=-lr)
+
+
+class Muon(torch.optim.Optimizer):
+    def __init__(self, params, lr=1e-3, momentum=0, nesterov=False, targeted=False, tau=1.0, return_top=True):
+        if lr < 0.0:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, targeted=targeted, tau=tau, return_top=return_top)
+        super().__init__(params, defaults)
+
+    def step(self, svd_prob=0):
         track_svd_this_step = random.random() < svd_prob
 
         for group in self.param_groups:
@@ -167,40 +214,30 @@ def step(self, svd_prob=0):
                     p_spectrum = torch.linalg.svdvals(p_mat)
 
                 # 3. Calculate the Muon update
-                update = zeropower_via_newtonschulz5(g.reshape(len(g), -1)).view(g.shape) # whiten the update
+                if group["targeted"]:
+                    update = targeted_newtonschulz5(g.reshape(len(g), -1), tau=group["tau"], return_top=group["return_top"]).view(g.shape)
+                else:
+                    update = zeropower_via_newtonschulz5(g.reshape(len(g), -1)).view(g.shape) 
                 
                 # 4. Track update spectrum AND tangent projection percentage
                 if track_svd_this_step:
                     update_mat = update.reshape(len(update), -1).float()
                     update_spectrum = torch.linalg.svdvals(update_mat)
                     
-                    # Calculate percentage of the update in the tangent space
                     tangent_update = project_onto_tangent_space(p.data, update)
                     update_norm = update.norm()
-                    
-                    if update_norm > 0:
-                        tangent_percent = (tangent_update.norm() / update_norm).item() * 100.0
-                    else:
-                        tangent_percent = 0.0
+                    tangent_percent = (tangent_update.norm() / update_norm).item() * 100.0 if update_norm > 0 else 0.0
 
-                    # Initialize lists if they don't exist
                     if "spectra_history" not in state:
-                        state["spectra_history"] = {
-                            "orig_grad": [],
-                            "param": [],
-                            "update": [],
-                            "tangent_proj_percent": []
-                        }
+                        state["spectra_history"] = {"orig_grad": [], "param": [], "update": [], "tangent_proj_percent": []}
                     
-                    # Detach, move to CPU, and append
                     state["spectra_history"]["orig_grad"].append(orig_g_spectrum.detach().cpu())
                     state["spectra_history"]["param"].append(p_spectrum.detach().cpu())
                     state["spectra_history"]["update"].append(update_spectrum.detach().cpu())
-                    
-                    # Append the tangent projection percentage
                     state["spectra_history"]["tangent_proj_percent"].append(tangent_percent)    
                 
-                p.data.add_(update, alpha=-lr) # take a step
+                p.data.add_(update, alpha=-lr)
+
 #############################################
 #                DataLoader                 #
 #############################################
@@ -216,7 +253,6 @@ def batch_crop(images, crop_size):
     r = (images.size(-1) - crop_size)//2
     shifts = torch.randint(-r, r+1, size=(len(images), 2), device=images.device)
     images_out = torch.empty((len(images), 3, crop_size, crop_size), device=images.device, dtype=images.dtype)
-    # The two cropping methods in this if-else produce equivalent results, but the second is faster for r > 2.
     if r <= 2:
         for sy in range(-r, r+1):
             for sx in range(-r, r+1):
@@ -233,7 +269,6 @@ def batch_crop(images, crop_size):
     return images_out
 
 class CifarLoader:
-
     def __init__(self, path, train=True, batch_size=500, aug=None, skew=1):
         data_path = os.path.join(path, "train.pt" if train else "test.pt")
         if not os.path.exists(data_path):
@@ -244,41 +279,24 @@ class CifarLoader:
 
         data = torch.load(data_path, map_location=torch.device("cuda"))
         self.images, self.labels, self.classes = data["images"], data["labels"], data["classes"]
-        # It's faster to load+process uint8 data than to load preprocessed fp16 data
 
         if skew is not None:
             selected_indices = []
-    
             for i, cls in enumerate(self.classes):
-                # Find indices for this class
                 cls_idx = (self.labels == i).nonzero(as_tuple=True)[0]
-            
-                # Randomly sample without replacement
                 perm = torch.randperm(len(cls_idx), device=cls_idx.device)
                 n = max(int((i+1)**(-1*skew) * len(cls_idx)), 1)
-                print(f"class: {cls}, count: {n}")
-            
                 chosen = cls_idx[perm[:n]]
-            
                 selected_indices.append(chosen)
-            
             selected_indices = torch.cat(selected_indices)
-                    
             self.images = self.images[selected_indices]
             self.labels = self.labels[selected_indices]
         
-
-        
         self.images = (self.images.half() / 255).permute(0, 3, 1, 2).to(memory_format=torch.channels_last)
-
         self.normalize = T.Normalize(CIFAR_MEAN, CIFAR_STD)
-        self.proc_images = {} # Saved results of image processing to be done on the first epoch
+        self.proc_images = {}
         self.epoch = 0
-
         self.aug = aug or {}
-        for k in self.aug.keys():
-            assert k in ["flip", "translate"], "Unrecognized key: %s" % k
-
         self.batch_size = batch_size
         self.drop_last = train
         self.shuffle = train
@@ -287,13 +305,10 @@ class CifarLoader:
         return len(self.images)//self.batch_size if self.drop_last else ceil(len(self.images)/self.batch_size)
 
     def __iter__(self):
-
         if self.epoch == 0:
             images = self.proc_images["norm"] = self.normalize(self.images)
-            # Pre-flip images in order to do every-other epoch flipping scheme
             if self.aug.get("flip", False):
                 images = self.proc_images["flip"] = batch_flip_lr(images)
-            # Pre-pad images to save time when doing random translation
             pad = self.aug.get("translate", 0)
             if pad > 0:
                 self.proc_images["pad"] = F.pad(images, (pad,)*4, "reflect")
@@ -304,13 +319,12 @@ class CifarLoader:
             images = self.proc_images["flip"]
         else:
             images = self.proc_images["norm"]
-        # Flip all images together every other epoch. This increases diversity relative to random flipping
+            
         if self.aug.get("flip", False):
             if self.epoch % 2 == 1:
                 images = images.flip(-1)
 
         self.epoch += 1
-
         indices = (torch.randperm if self.shuffle else torch.arange)(len(images), device=images.device)
         for i in range(len(self)):
             idxs = indices[i*self.batch_size:(i+1)*self.batch_size]
@@ -320,17 +334,14 @@ class CifarLoader:
 #            Network Definition             #
 #############################################
 
-# note the use of low BatchNorm stats momentum
 class BatchNorm(nn.BatchNorm2d):
     def __init__(self, num_features, momentum=0.6, eps=1e-12):
         super().__init__(num_features, eps=eps, momentum=1-momentum)
         self.weight.requires_grad = False
-        # Note that PyTorch already initializes the weights to one and bias to zero
 
 class Conv(nn.Conv2d):
     def __init__(self, in_channels, out_channels):
         super().__init__(in_channels, out_channels, kernel_size=3, padding="same", bias=False)
-
     def reset_parameters(self):
         super().reset_parameters()
         w = self.weight.data
@@ -402,7 +413,7 @@ class CifarNet(nn.Module):
         return self.head(x) / x.size(-1)
 
 ############################################
-#                 Logging                  #
+#                Logging                   #
 ############################################
 
 def print_columns(columns_list, is_head=False, is_final_entry=False):
@@ -432,19 +443,10 @@ def print_training_details(variables, is_final_entry):
     print_columns(formatted, is_final_entry=is_final_entry)
 
 ############################################
-#               Evaluation                 #
+#                Evaluation                #
 ############################################
 
 def infer(model, loader, tta_level=0):
-
-    # Test-time augmentation strategy (for tta_level=2):
-    # 1. Flip/mirror the image left-to-right (50% of the time).
-    # 2. Translate the image by one pixel either up-and-left or down-and-right (50% of the time,
-    #    i.e. both happen 25% of the time).
-    #
-    # This creates 6 views per image (left/right times the two translations and no-translation),
-    # which we evaluate and then weight according to the given probabilities.
-
     def infer_basic(inputs, net):
         return net(inputs).clone()
 
@@ -478,8 +480,7 @@ def evaluate(model, loader, tta_level=0):
 #                Training                  #
 ############################################
 
-def main(run, model):
-
+def train_run(run_name, opt_config, model):
     batch_size = 500
     bias_lr = 0.053
     head_lr = 0.67
@@ -487,31 +488,36 @@ def main(run, model):
 
     test_loader = CifarLoader("cifar10", train=False, batch_size=2000)
     train_loader = CifarLoader("cifar10", train=True, batch_size=batch_size, aug=dict(flip=True, translate=2))
-    if run == "warmup":
-        # The only purpose of the first run is to warmup the compiled model, so we can use dummy data
-        train_loader.labels = torch.randint(0, 10, size=(len(train_loader.labels),), device=train_loader.labels.device)
+    
     total_train_steps = ceil(8 * len(train_loader))
     whiten_bias_train_steps = ceil(3 * len(train_loader))
 
-    # Create optimizers and learning rate schedulers
     filter_params = [p for p in model.parameters() if len(p.shape) == 4 and p.requires_grad]
     norm_biases = [p for n, p in model.named_parameters() if "norm" in n and p.requires_grad]
     param_configs = [dict(params=[model.whiten.bias], lr=bias_lr, weight_decay=wd/bias_lr),
                      dict(params=norm_biases,         lr=bias_lr, weight_decay=wd/bias_lr),
                      dict(params=[model.head.weight], lr=head_lr, weight_decay=wd/head_lr)]
-    optimizer1 = torch.optim.SGD(param_configs, momentum=0.85, nesterov=True, fused=True)
-    optimizer2 = Muon(filter_params, lr=0.24, momentum=0.6, nesterov=True)
+    
+    # Initialize optimizers based on config
+    optimizer1 = TrackedSGD(param_configs, momentum=0.85, nesterov=True)
+    
+    if opt_config["type"] == "sgd":
+        optimizer2 = TrackedSGD(filter_params, lr=0.24, momentum=0.6, nesterov=True, weight_decay=wd/0.24)
+    elif opt_config["type"] == "muon":
+        optimizer2 = Muon(filter_params, lr=0.24, momentum=0.6, nesterov=True, targeted=False)
+    elif opt_config["type"] == "muon_targeted":
+        optimizer2 = Muon(filter_params, lr=0.24, momentum=0.6, nesterov=True, 
+                          targeted=True, tau=opt_config["tau"], return_top=opt_config["return_top"])
+
     optimizers = [optimizer1, optimizer2]
     for opt in optimizers:
         for group in opt.param_groups:
             group["initial_lr"] = group["lr"]
 
-    # For accurately timing GPU code
     starter = torch.cuda.Event(enable_timing=True)
     ender = torch.cuda.Event(enable_timing=True)
     time_seconds = 0.0
-    def start_timer():
-        starter.record()
+    def start_timer(): starter.record()
     def stop_timer():
         ender.record()
         torch.cuda.synchronize()
@@ -521,20 +527,15 @@ def main(run, model):
     model.reset()
     step = 0
 
-    # Initialize the whitening layer using training images
     start_timer()
     train_images = train_loader.normalize(train_loader.images[:5000])
     model.init_whiten(train_images)
     stop_timer()
 
     track_svd = True
+    run_spectra_data = {} # Collect data across all epochs for this run
 
     for epoch in range(ceil(total_train_steps / len(train_loader))):
-
-        ####################
-        #     Training     #
-        ####################
-
         start_timer()
         model.train()
         for inputs, labels in train_loader:
@@ -545,63 +546,32 @@ def main(run, model):
             for group in optimizer1.param_groups[1:]+optimizer2.param_groups:
                 group["lr"] = group["initial_lr"] * (1 - step / total_train_steps)
             for opt in optimizers:
-                if isinstance(opt, Muon) and track_svd:
-                    opt.step(svd_prob=0.1)
-                else:
-                    opt.step()
+                if track_svd: opt.step(svd_prob=0.1)
+                else: opt.step()
             model.zero_grad(set_to_none=True)
             step += 1
-            if step >= total_train_steps:
-                break
+            if step >= total_train_steps: break
         stop_timer()
         
-        epoch_spectra_data = {}
-
+        # Aggregate spectra data
         for name, param in model.named_parameters():
-            if param in optimizer2.state:
-                state = optimizer2.state[param]
+            state = optimizer1.state.get(param) or optimizer2.state.get(param)
+            if state and "spectra_history" in state and len(state["spectra_history"]["orig_grad"]) > 0:
+                if name not in run_spectra_data:
+                    run_spectra_data[name] = {"grad": [], "param": [], "update": [], "tangent_proj_percent": []}
                 
-                if "spectra_history" in state and len(state["spectra_history"]["orig_grad"]) > 0:
-                    
-                    # Concatenate into full distributions
-                    full_dist_grad = torch.cat(state["spectra_history"]["orig_grad"])
-                    full_dist_param = torch.cat(state["spectra_history"]["param"])
-                    full_dist_update = torch.cat(state["spectra_history"]["update"])
-                    
-                    # Convert the list of floats to a tensor
-                    full_tangent_proj = torch.tensor(state["spectra_history"]["tangent_proj_percent"])
-                    
-                    # Store in our dictionary
-                    epoch_spectra_data[name] = {
-                        "grad": full_dist_grad,
-                        "param": full_dist_param,
-                        "update": full_dist_update,
-                        "tangent_proj_percent": full_tangent_proj # Added to saved dict
-                    }
-                    
-                    # Clear the lists for the next epoch
-                    state["spectra_history"]["orig_grad"].clear()
-                    state["spectra_history"]["param"].clear()
-                    state["spectra_history"]["update"].clear()
-                    state["spectra_history"]["tangent_proj_percent"].clear() # Cleared list
-        
-        # Save the dictionary to disk
-        if epoch_spectra_data:
-            torch.save(epoch_spectra_data, f"spectra_data_epoch_{epoch}.pt")
-            print(f"Saved spectra data to spectra_data_epoch_{epoch}.pt")
-        ####################
-        #    Evaluation    #
-        ####################
+                run_spectra_data[name]["grad"].append(torch.cat(state["spectra_history"]["orig_grad"]))
+                run_spectra_data[name]["param"].append(torch.cat(state["spectra_history"]["param"]))
+                run_spectra_data[name]["update"].append(torch.cat(state["spectra_history"]["update"]))
+                run_spectra_data[name]["tangent_proj_percent"].extend(state["spectra_history"]["tangent_proj_percent"])
+                
+                # Clear lists for next epoch
+                for key in state["spectra_history"]: state["spectra_history"][key].clear()
 
-        # Save the accuracy and loss from the last training batch of the epoch
         train_acc = (outputs.detach().argmax(1) == labels).float().mean().item()
         val_acc = evaluate(model, test_loader, tta_level=0)
+        run = run_name if epoch == 0 else None
         print_training_details(locals(), is_final_entry=False)
-        run = None # Only print the run number once
-
-    ####################
-    #  TTA Evaluation  #
-    ####################
 
     start_timer()
     tta_val_acc = evaluate(model, test_loader, tta_level=2)
@@ -609,22 +579,80 @@ def main(run, model):
     epoch = "eval"
     print_training_details(locals(), is_final_entry=True)
 
+    # Concat lists in run_spectra_data and save
+    for name in run_spectra_data:
+        run_spectra_data[name]["grad"] = torch.cat(run_spectra_data[name]["grad"])
+        run_spectra_data[name]["param"] = torch.cat(run_spectra_data[name]["param"])
+        run_spectra_data[name]["update"] = torch.cat(run_spectra_data[name]["update"])
+        run_spectra_data[name]["tangent_proj_percent"] = torch.tensor(run_spectra_data[name]["tangent_proj_percent"])
+
+    torch.save(run_spectra_data, f"{run_name}_spectra.pt")
+    print(f"Saved run spectra to {run_name}_spectra.pt")
     return tta_val_acc
 
-if __name__ == "__main__":
 
-    # We re-use the compiled model between runs to save the non-data-dependent compilation time
+def plot_results(run_names):
+    """Generates comparison plots for the ablation runs."""
+    plt.figure(figsize=(15, 6))
+    
+    # We will pick the first layer present in the saved data to plot
+    sample_data = torch.load(f"{run_names[0]}_spectra.pt", weights_only=False)
+    target_layer = list(sample_data.keys())[0] # Usually 'layers.1.conv1.weight'
+    print(f"Plotting analytics for representative layer: {target_layer}")
+
+    # Plot 1: Tangent Projection Percentage
+    plt.subplot(1, 2, 1)
+    for run in run_names:
+        data = torch.load(f"{run}_spectra.pt", weights_only=False)
+        tangent_pct = data[target_layer]["tangent_proj_percent"].numpy()
+        plt.plot(tangent_pct, label=run, alpha=0.8)
+    
+    plt.title(f"Tangent Projection Percentage Over Time\n({target_layer})")
+    plt.xlabel("Tracking Step (SVD Sample)")
+    plt.ylabel("% of Update in Tangent Space")
+    plt.grid(True, linestyle="--", alpha=0.5)
+    plt.legend()
+
+    # Plot 2: Mean Update Spectrum
+    plt.subplot(1, 2, 2)
+    for run in run_names:
+        data = torch.load(f"{run}_spectra.pt", weights_only=False)
+        update_spectra = data[target_layer]["update"] # Shape: [Steps, SingularValues]
+        mean_update_spectrum = update_spectra.mean(dim=0).numpy()
+        plt.plot(mean_update_spectrum, label=run, linewidth=2)
+        
+    plt.title(f"Mean Singular Values of the Update\n({target_layer})")
+    plt.xlabel("Singular Value Index")
+    plt.ylabel("Magnitude")
+    plt.grid(True, linestyle="--", alpha=0.5)
+    plt.legend()
+
+    plt.tight_layout()
+    plt.savefig("optimizer_ablation_comparison.png", dpi=300)
+    print("Saved comparison plots to 'optimizer_ablation_comparison.png'")
+    plt.show()
+
+if __name__ == "__main__":
+    # Ensure warmup with dummy data
     model = CifarNet().cuda().to(memory_format=torch.channels_last)
     model.compile(mode="max-autotune")
-
     print_columns(logging_columns_list, is_head=True)
-    main("warmup", model)
-    accs = torch.tensor([main(run, model) for run in range(1)])
-    print("Mean: %.4f    Std: %.4f" % (accs.mean(), accs.std()))
+    
+    # Warmup
+    train_run("warmup", {"type": "sgd"}, model)
+    
+    configurations = [
+        {"name": "Tracked_SGD", "config": {"type": "sgd"}},
+        {"name": "Muon_Standard", "config": {"type": "muon"}},
+        {"name": "Muon_Targeted_Bot", "config": {"type": "muon_targeted", "tau": 0.5, "return_top": False}},
+        {"name": "Muon_Targeted_Top", "config": {"type": "muon_targeted", "tau": 0.5, "return_top": True}}
+    ]
 
-    log_dir = os.path.join("logs", str(uuid.uuid4()))
-    os.makedirs(log_dir, exist_ok=True)
-    log_path = os.path.join(log_dir, "log.pt")
-    torch.save(dict(code=code, accs=accs), log_path)
-    print(os.path.abspath(log_path))
+    run_names = []
+    for cfg in configurations:
+        print(f"\n>>> Starting Run: {cfg['name']} <<<")
+        train_run(cfg["name"], cfg["config"], model)
+        run_names.append(cfg["name"])
 
+    print("\n>>> Generating Plots <<<")
+    plot_results(run_names)
