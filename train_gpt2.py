@@ -181,7 +181,8 @@ class Muon(torch.optim.Optimizer):
                     g = g.add(buf, alpha=momentum) if group['nesterov'] else buf
                     g = zeropower_backend(g, steps=group['backend_steps'])
                     with open("muon_update_svds.txt", 'a') as file:
-                        file.write(str(torch.linalg.svdvals(g)))
+                        u_svds = torch.linalg.svdvals(g.detach().float())
+                        file.write(str(u_svds))
                     g *= max(1, g.size(0)/g.size(1))**0.5
                     if self._step % 100 == 0:
                         u_svds = torch.linalg.svdvals(g.detach().float())
