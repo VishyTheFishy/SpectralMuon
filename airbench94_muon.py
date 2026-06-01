@@ -58,8 +58,8 @@ def targeted_newtonschulz5(G, steps:int = 3, tau: float = 1., return_top: bool =
     projBot = 0.5 * (I - signedM)
     projTop = 0.5 * (I + signedM)
     nsX = zeropower_via_newtonschulz5(X, steps)
-    nsBot = nsX @ projBot + X @ projTop
-    nsTop = X @ projBot + nsX @ projTop
+    nsBot = tau * nsX @ projBot + X @ projTop
+    nsTop = X @ projBot + tau * nsX @ projTop
     if G.size(-1) > G.size(-2):
         nsBot = nsBot.mT
         nsTop = nsTop.mT
