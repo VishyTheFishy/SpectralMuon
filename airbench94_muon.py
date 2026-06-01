@@ -643,4 +643,4 @@ if __name__ == "__main__":
         run_names.append(cfg["name"])
 
     print("\n>>> Generating Plots <<<")
-    plot_results(run_names)names)
+    plot_results(run_names)
