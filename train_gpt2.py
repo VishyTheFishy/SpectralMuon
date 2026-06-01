@@ -7,6 +7,8 @@ import glob
 import time
 import contextlib
 from dataclasses import dataclass
+import wandb
+
 
 import numpy as np
 import torch
@@ -133,10 +135,8 @@ class Muon(torch.optim.Optimizer):
                     if self._step % 20 == 0:
                         p_svds = torch.linalg.svdvals(p)
                         g_svds = torch.linalg.svdvals(g)
-                        with open(f"spec_log/p_eranks{self._step}.txt", "a") as file:
-                            file.write(compute_effective_rank(p_svds))
-                        with open(f"spec_log/g_eranks{self._step}.txt", "a") as file:
-                            file.write(compute_effective_rank(g_svds))
+                        run.log({"p_erank": compute_effective_rank(p_svds).item()})
+                        run.log({"g_erank": compute_effective_rank(g_svds).item()})
 
                     assert g is not None
                     state = self.state[p]
@@ -147,6 +147,10 @@ class Muon(torch.optim.Optimizer):
                     g = g.add(buf, alpha=momentum) if group['nesterov'] else buf
                     g = zeropower_backend(g, steps=group['backend_steps'])
                     g *= max(1, g.size(0)/g.size(1))**0.5
+                    if self._step % 20 == 0:
+                        u_svds = torch.linalg.svdvals(g)
+                        run.log({"u_erank": compute_effective_rank(u_svds).item()})
+
                     updates_flat[curr_idx:curr_idx+p.numel()] = g.flatten()
                 curr_idx += p.numel()
 
@@ -409,6 +413,8 @@ class Hyperparameters:
     warmup_iters : int = 0
     cooldown_iters : int = 600 # number of iterations of linear warmup/cooldown for triangular or trapezoidal schedule
     weight_decay : float = 0
+    muon_lr : float = .05
+    backend : string : "newtonschulz5"
     # evaluation and logging hyperparams
     val_loss_every : int = 125 # every how many steps to evaluate val loss? 0 for only at the end
     val_tokens : int = 10485760 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
@@ -484,13 +490,24 @@ model = torch.compile(model)
 model = DDP(model, device_ids=[ddp_local_rank])
 raw_model = model.module # always contains the "raw" unwrapped model
 
+run = wandb.init(
+    entity="vishrut-229",
+    project="spectral-muon-nanogpt",
+    # Track hyperparameters and run metadata.
+    config={
+        "learning_rate": args.muon_lr,
+        "backend": args.backend,
+    },
+)
+
+
 # init the optimizer(s)
 optimizer1 = torch.optim.Adam([raw_model.transformer.wte.weight, raw_model.transformer.vte.weight], lr=0.6, betas=(0.8, 0.95), fused=True)
 optimizer2 = torch.optim.Adam([raw_model.lm_head.weight], lr=0.008, betas=(0.8, 0.95), fused=True)
 params = list(raw_model.transformer.h.parameters())
 matrix_params = [p for p in params if p.ndim == 2]
 scalar_params = [p for p in params if p.ndim < 2] + [raw_model.skip_weights]
-optimizer3 = Muon(matrix_params, lr=0.05, momentum=0.95)
+optimizer3 = Muon(matrix_params, lr=args.muon_lr, backend = args.backend, momentum=0.95)
 optimizer4 = torch.optim.Adam(scalar_params, lr=0.04, betas=(0.8, 0.95), fused=True) # note that this learning rate is neither sensitive nor tuned
 optimizers = [optimizer1, optimizer2, optimizer3, optimizer4]
 # learning rate decay scheduler (linear warmup and cooldown)
@@ -543,6 +560,7 @@ for step in range(args.num_iterations + 1):
         dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
         val_loss /= val_steps
         # log val loss to console and to logfile
+        run.log({"val_loss": val_loss})
         print0(f'step:{step}/{args.num_iterations} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/(timed_steps-1):.2f}ms')
         # start the clock again
         torch.cuda.synchronize()
@@ -594,6 +612,7 @@ for step in range(args.num_iterations + 1):
 
     #dist.all_reduce(train_loss, op=dist.ReduceOp.AVG) # all-reducing the training loss would be more correct in terms of logging, but slower
     approx_time = training_time_ms + 1000 * (time.time() - t0)
+    run.log({"train_loss": train_loss.item()})
     print0(f"step:{step+1}/{args.num_iterations} train_loss:{train_loss.item():.4f} train_time:{approx_time:.0f}ms step_avg:{approx_time/timed_steps:.2f}ms")
 
 if master_process:
