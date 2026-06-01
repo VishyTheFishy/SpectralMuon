@@ -73,7 +73,7 @@ def targeted_newtonschulz5(G, steps:int = 3, tau: float = 1.):
         nsTop = nsTop.mT
     return nsTop #(nsBot, nsTop)
 
-def targeted_top_newtonschulz5(G, steps:int = 3, tau: float = 1.):
+def targeted_top_newtonschulz5(G, steps:int = 3, tau: float = 1e-5):
     assert G.ndim >= 2
     X = G.bfloat16()
     if G.size(-1) > G.size(-2):
