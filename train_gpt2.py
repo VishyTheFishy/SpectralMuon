@@ -73,7 +73,7 @@ def targeted_newtonschulz5(G, steps:int = 3, tau: float = 1.):
         nsTop = nsTop.mT
     return nsTop #(nsBot, nsTop)
 
-def targeted_top_newtonschulz5(G, steps:int = 3, tau: float = 1e-5):
+def targeted_top_newtonschulz5(G, steps:int = 3, tau: float = 1e-3):
     assert G.ndim >= 2
     X = G.bfloat16()
     if G.size(-1) > G.size(-2):
@@ -180,7 +180,7 @@ class Muon(torch.optim.Optimizer):
                     buf.mul_(momentum).add_(g)
                     g = g.add(buf, alpha=momentum) if group['nesterov'] else buf
                     g = zeropower_backend(g, steps=group['backend_steps'])
-                    with open("top5_update_svds.txt", 'a') as file:
+                    with open("top3_update_svds.txt", 'a') as file:
                         u_svds = torch.linalg.svdvals(g.detach().float())
                         file.write(str(u_svds))
                     g *= max(1, g.size(0)/g.size(1))**0.5
