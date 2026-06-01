@@ -539,7 +539,7 @@ def train_run(run_name, opt_config, model):
             for group in optimizer1.param_groups[1:]+optimizer2.param_groups:
                 group["lr"] = group["initial_lr"] * (1 - step / total_train_steps)
             for opt in optimizers:
-                if track_svd: opt.step(svd_prob=0.1)
+                if track_svd: opt.step(svd_prob=0.3)
                 else: opt.step()
             model.zero_grad(set_to_none=True)
             step += 1
