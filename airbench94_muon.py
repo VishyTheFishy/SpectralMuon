@@ -224,7 +224,7 @@ class Muon(torch.optim.Optimizer):
                     p_spectrum = torch.linalg.svdvals(p_mat)
 
                 if group["targeted"]:
-                    update = targeted_newtonschulz5(g.reshape(len(g), -1), tau=group["tau"], return_top=group["return_top"]).view(g.shape)
+                    update = targeted_newtonschulz5(g.reshape(len(g), -1), steps=7, tau=group["tau"], return_top=group["return_top"]).view(g.shape)
                 else:
                     update = zeropower_via_newtonschulz5(g.reshape(len(g), -1)).view(g.shape) 
                 
@@ -559,7 +559,6 @@ def train_run(run_name, opt_config, model):
         for inputs, labels in train_loader:
             outputs = model(inputs, whiten_bias_grad=(step < whiten_bias_train_steps))
             F.cross_entropy(outputs, labels, label_smoothing=0.2, reduction="sum").backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             for group in optimizer1.param_groups[:1]:
                 group["lr"] = group["initial_lr"] * (1 - step / whiten_bias_train_steps)
             for group in optimizer1.param_groups[1:]+optimizer2.param_groups:
