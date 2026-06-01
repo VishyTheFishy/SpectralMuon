@@ -179,6 +179,8 @@ class Muon(torch.optim.Optimizer):
                     buf = state['momentum_buffer']
                     buf.mul_(momentum).add_(g)
                     g = g.add(buf, alpha=momentum) if group['nesterov'] else buf
+                    with open("mmt_grads.txt", 'a') as file:
+                        file.write(g)
                     g = zeropower_backend(g, steps=group['backend_steps'])
                     g *= max(1, g.size(0)/g.size(1))**0.5
                     if self._step % 100 == 0:
@@ -450,7 +452,7 @@ class Hyperparameters:
     cooldown_iters : int = 600 # number of iterations of linear warmup/cooldown for triangular or trapezoidal schedule
     weight_decay : float = 0
     muon_lr : float = .05
-    backend : str = "targeted_top"
+    backend : str = "newtonschulz5"
     # evaluation and logging hyperparams
     val_loss_every : int = 125 # every how many steps to evaluate val loss? 0 for only at the end
     val_tokens : int = 10485760 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
