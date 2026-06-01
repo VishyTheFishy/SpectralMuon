@@ -166,11 +166,11 @@ class Muon(torch.optim.Optimizer):
                 # luckily this will perfectly distribute a transformer with multiple of 4 layers to 8 GPUs
                 if i % int(os.environ['WORLD_SIZE']) == int(os.environ['RANK']):
                     g = p.grad
-                    if self._step % 20 == 0:
+                    if self._step % 100 == 0:
                         p_svds = torch.linalg.svdvals(p)
                         g_svds = torch.linalg.svdvals(g)
-                        run.log({"p_erank": compute_effective_rank(p_svds).item()})
-                        run.log({"g_erank": compute_effective_rank(g_svds).item()})
+                        run.log({f"p_erank{i}": compute_effective_rank(p_svds).item()}, step=self._step)
+                        run.log({f"g_erank{i}": compute_effective_rank(g_svds).item()}, step=self._step)
 
                     assert g is not None
                     state = self.state[p]
@@ -181,9 +181,9 @@ class Muon(torch.optim.Optimizer):
                     g = g.add(buf, alpha=momentum) if group['nesterov'] else buf
                     g = zeropower_backend(g, steps=group['backend_steps'])
                     g *= max(1, g.size(0)/g.size(1))**0.5
-                    if self._step % 20 == 0:
+                    if self._step % 100 == 0:
                         u_svds = torch.linalg.svdvals(g.detach().float())
-                        run.log({"u_erank": compute_effective_rank(u_svds).item()})
+                        run.log({f"u_erank{i}": compute_effective_rank(u_svds).item()}, step=self._step)
 
                     updates_flat[curr_idx:curr_idx+p.numel()] = g.flatten()
                 curr_idx += p.numel()
@@ -596,7 +596,7 @@ for step in range(args.num_iterations + 1):
         dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
         val_loss /= val_steps
         # log val loss to console and to logfile
-        run.log({"val_loss": val_loss})
+        run.log({"val_loss": val_loss}, step=step)
         print0(f'step:{step}/{args.num_iterations} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/(timed_steps-1):.2f}ms')
         # start the clock again
         torch.cuda.synchronize()
@@ -648,7 +648,7 @@ for step in range(args.num_iterations + 1):
 
     #dist.all_reduce(train_loss, op=dist.ReduceOp.AVG) # all-reducing the training loss would be more correct in terms of logging, but slower
     approx_time = training_time_ms + 1000 * (time.time() - t0)
-    run.log({"train_loss": train_loss.item()})
+    run.log({"train_loss": train_loss.item()}, step=step)
     print0(f"step:{step+1}/{args.num_iterations} train_loss:{train_loss.item():.4f} train_time:{approx_time:.0f}ms step_avg:{approx_time/timed_steps:.2f}ms")
 
 if master_process:
