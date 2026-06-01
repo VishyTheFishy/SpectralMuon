@@ -161,7 +161,19 @@ class TrackedSGD(torch.optim.Optimizer):
                     
                     tangent_update = project_onto_tangent_space(p.data, update)
                     update_norm = update.norm()
-                    tangent_percent = -np.log(1-(tangent_update.norm() / update_norm).item()) if update_norm > 0 else 0.0
+                    # Calculate the squared norm ratio (true proportion of the vector in the subspace)
+                    tangent_sq = tangent_update.norm() ** 2
+                    update_sq = update_norm ** 2
+
+                    if update_sq > 0:
+                        # Clamp to ensure x_ratio never exceeds 1.0 due to floating point inaccuracies
+                        x_ratio = min((tangent_sq / update_sq).item(), 1.0)
+                        
+                        # Add an epsilon to prevent -log(0) == inf
+                        eps = 1e-9
+                        tangent_metric = -np.log(1.0 - x_ratio + eps)
+                    else:
+                        tangent_metric = 0.0
 
 
                     if "spectra_history" not in state:
@@ -170,7 +182,7 @@ class TrackedSGD(torch.optim.Optimizer):
                     state["spectra_history"]["orig_grad"].append(orig_g_spectrum.detach().cpu())
                     state["spectra_history"]["param"].append(p_spectrum.detach().cpu())
                     state["spectra_history"]["update"].append(update_spectrum.detach().cpu())
-                    state["spectra_history"]["tangent_proj_percent"].append(tangent_percent)    
+                    state["spectra_history"]["tangent_proj_percent"].append(tangent_metric)    
                 
                 p.data.add_(update, alpha=-lr)
 
@@ -222,7 +234,18 @@ class Muon(torch.optim.Optimizer):
                     
                     tangent_update = project_onto_tangent_space(p.data, update)
                     update_norm = update.norm()
-                    tangent_percent = (tangent_update.norm() / update_norm).item() * 100.0 if update_norm > 0 else 0.0
+                    tangent_sq = tangent_update.norm() ** 2
+                    update_sq = update_norm ** 2
+
+                    if update_sq > 0:
+                        # Clamp to ensure x_ratio never exceeds 1.0 due to floating point inaccuracies
+                        x_ratio = min((tangent_sq / update_sq).item(), 1.0)
+                        
+                        # Add an epsilon to prevent -log(0) == inf
+                        eps = 1e-9
+                        tangent_metric = -np.log(1.0 - x_ratio + eps)
+                    else:
+                        tangent_metric = 0.0
 
                     if "spectra_history" not in state:
                         state["spectra_history"] = {"orig_grad": [], "param": [], "update": [], "tangent_proj_percent": []}
@@ -230,7 +253,7 @@ class Muon(torch.optim.Optimizer):
                     state["spectra_history"]["orig_grad"].append(orig_g_spectrum.detach().cpu())
                     state["spectra_history"]["param"].append(p_spectrum.detach().cpu())
                     state["spectra_history"]["update"].append(update_spectrum.detach().cpu())
-                    state["spectra_history"]["tangent_proj_percent"].append(tangent_percent)    
+                    state["spectra_history"]["tangent_proj_percent"].append(tangent_metric)    
                 
                 p.data.add_(update, alpha=-lr)
 
