@@ -160,7 +160,8 @@ class TrackedSGD(torch.optim.Optimizer):
                     
                     tangent_update = project_onto_tangent_space(p.data, update)
                     update_norm = update.norm()
-                    tangent_percent = (tangent_update.norm() / update_norm).item() * 100.0 if update_norm > 0 else 0.0
+                    tangent_percent = -torch.log(1-(tangent_update.norm() / update_norm).item()) if update_norm > 0 else 0.0
+
 
                     if "spectra_history" not in state:
                         state["spectra_history"] = {"orig_grad": [], "param": [], "update": [], "tangent_proj_percent": []}
