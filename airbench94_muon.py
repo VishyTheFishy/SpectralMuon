@@ -1,4 +1,4 @@
-""""
+"""
 airbench94_muon.py
 Runs in 2.59 seconds on a 400W NVIDIA A100 using torch==2.4.1
 Attains 94.01 mean accuracy (n=200 trials)
@@ -11,8 +11,6 @@ Descends from https://github.com/tysam-code/hlb-CIFAR10/blob/main/main.py
 import os
 import random
 import sys
-with open(sys.argv[0]) as f:
-    code = f.read()
 import uuid
 from math import ceil
 
@@ -23,6 +21,10 @@ import torchvision
 import torchvision.transforms as T
 import matplotlib.pyplot as plt
 import numpy as np
+
+# Capture code for logging if needed
+with open(sys.argv[0]) as f:
+    code = f.read()
 
 torch.backends.cudnn.benchmark = True
 
@@ -161,15 +163,11 @@ class TrackedSGD(torch.optim.Optimizer):
                     
                     tangent_update = project_onto_tangent_space(p.data, update)
                     update_norm = update.norm()
-                    # Calculate the squared norm ratio (true proportion of the vector in the subspace)
                     tangent_sq = tangent_update.norm() ** 2
                     update_sq = update_norm ** 2
 
                     if update_sq > 0:
-                        # Clamp to ensure x_ratio never exceeds 1.0 due to floating point inaccuracies
                         x_ratio = min((tangent_sq / update_sq).item(), 1.0)
-                        
-                        # Add an epsilon to prevent -log(0) == inf
                         eps = 1e-9
                         tangent_metric = -np.log(1.0 - x_ratio + eps)
                     else:
@@ -238,10 +236,7 @@ class Muon(torch.optim.Optimizer):
                     update_sq = update_norm ** 2
 
                     if update_sq > 0:
-                        # Clamp to ensure x_ratio never exceeds 1.0 due to floating point inaccuracies
                         x_ratio = min((tangent_sq / update_sq).item(), 1.0)
-                        
-                        # Add an epsilon to prevent -log(0) == inf
                         eps = 1e-9
                         tangent_metric = -np.log(1.0 - x_ratio + eps)
                     else:
@@ -610,9 +605,24 @@ def train_run(run_name, opt_config, model):
     print(f"Saved run spectra to {run_name}_spectra.pt")
     return tta_val_acc
 
+def create_and_save_plot(data, title, xlabel, ylabel, filename, color):
+    """Helper function to create and save individual plots safely."""
+    plt.figure(figsize=(6, 4))
+    plt.plot(data, linewidth=2, color=color)
+    plt.title(title)
+    plt.grid(True, linestyle="--", alpha=0.5)
+    plt.ylabel(ylabel)
+    plt.xlabel(xlabel)
+    plt.tight_layout()
+    plt.savefig(filename, dpi=300)
+    plt.close()
 
 def plot_results(run_names):
-    """Generates comparison plots for the ablation runs."""
+    """Generates comparison plots for the ablation runs and saves them individually."""
+    # Ensure our output directory exists
+    output_dir = "ablation_plots"
+    os.makedirs(output_dir, exist_ok=True)
+    
     # Load sample data to determine the layers
     sample_data = torch.load(f"{run_names[0]}_spectra.pt", weights_only=False)
     conv_layers = [k for k in sample_data.keys() if "conv" in k]
@@ -624,18 +634,9 @@ def plot_results(run_names):
     # Pick the layer right in the middle of our list
     middle_layer_idx = len(conv_layers) // 2
     middle_layer = conv_layers[middle_layer_idx]
-    print(f"Plotting analytics for middle layer: {middle_layer}")
-    
-    n_runs = len(run_names)
-    # Create a grid: rows = number of runs, cols = 5 
-    # (first weight, last weight, first update, last update, log-barrier)
-    fig, axes = plt.subplots(nrows=n_runs, ncols=5, figsize=(25, 4 * n_runs))
-    
-    # Ensure axes is a 2D array even if there's only 1 run
-    if n_runs == 1:
-        axes = np.expand_dims(axes, axis=0)
+    print(f"Plotting analytics for middle layer: {middle_layer} inside '{output_dir}/'")
 
-    for i, run in enumerate(run_names):
+    for run in run_names:
         data = torch.load(f"{run}_spectra.pt", weights_only=False)
         
         weight_spectra = data[middle_layer]["param"]   # Shape: [Steps, SingularValues]
@@ -648,44 +649,26 @@ def plot_results(run_names):
         first_update = update_spectra[0].numpy()
         last_update = update_spectra[-1].numpy()
         
-        # 1. First Weight Spectrum
-        axes[i, 0].plot(first_weight, label=run, linewidth=2, color='blue')
-        axes[i, 0].set_title(f"{run}\nFirst Weight Spectrum")
-        axes[i, 0].grid(True, linestyle="--", alpha=0.5)
-        axes[i, 0].set_ylabel("Magnitude")
-        
-        # 2. Last Weight Spectrum
-        axes[i, 1].plot(last_weight, label=run, linewidth=2, color='orange')
-        axes[i, 1].set_title(f"{run}\nLast Weight Spectrum")
-        axes[i, 1].grid(True, linestyle="--", alpha=0.5)
-        
-        # 3. First Update Spectrum
-        axes[i, 2].plot(first_update, label=run, linewidth=2, color='green')
-        axes[i, 2].set_title(f"{run}\nFirst Update Spectrum")
-        axes[i, 2].grid(True, linestyle="--", alpha=0.5)
-        
-        # 4. Last Update Spectrum
-        axes[i, 3].plot(last_update, label=run, linewidth=2, color='red')
-        axes[i, 3].set_title(f"{run}\nLast Update Spectrum")
-        axes[i, 3].grid(True, linestyle="--", alpha=0.5)
+        # Define paths and create the 5 individual plots
+        base_title = f"{run}"
+        base_path = os.path.join(output_dir, run)
 
-        # 5. Log-Barrier (Tangent Projection)
-        axes[i, 4].plot(tangent_pct.numpy(), label=run, linewidth=2, color='purple')
-        axes[i, 4].set_title(f"{run}\nLog-Barrier of Update")
-        axes[i, 4].grid(True, linestyle="--", alpha=0.5)
+        create_and_save_plot(first_weight, f"{base_title}\nFirst Weight Spectrum", 
+                             "Singular Value Index", "Magnitude", f"{base_path}_first_weight.png", 'blue')
         
-        # Only set X-labels on the bottom row to keep it clean
-        if i == n_runs - 1:
-            axes[i, 0].set_xlabel("Singular Value Index")
-            axes[i, 1].set_xlabel("Singular Value Index")
-            axes[i, 2].set_xlabel("Singular Value Index")
-            axes[i, 3].set_xlabel("Singular Value Index")
-            axes[i, 4].set_xlabel("Tracking Step")
+        create_and_save_plot(last_weight, f"{base_title}\nLast Weight Spectrum", 
+                             "Singular Value Index", "Magnitude", f"{base_path}_last_weight.png", 'orange')
+        
+        create_and_save_plot(first_update, f"{base_title}\nFirst Update Spectrum", 
+                             "Singular Value Index", "Magnitude", f"{base_path}_first_update.png", 'green')
+        
+        create_and_save_plot(last_update, f"{base_title}\nLast Update Spectrum", 
+                             "Singular Value Index", "Magnitude", f"{base_path}_last_update.png", 'red')
+                             
+        create_and_save_plot(tangent_pct.numpy(), f"{base_title}\nLog-Barrier of Update", 
+                             "Tracking Step", "Metric Value", f"{base_path}_log_barrier.png", 'purple')
 
-    plt.tight_layout()
-    plt.savefig("optimizer_ablation_comparison.png", dpi=300)
-    print("Saved comparison plots to 'optimizer_ablation_comparison.png'")
-    plt.show()
+    print(f"Saved all individual plots to '{output_dir}/'")
 
 if __name__ == "__main__":
     model = CifarNet().cuda().to(memory_format=torch.channels_last)
