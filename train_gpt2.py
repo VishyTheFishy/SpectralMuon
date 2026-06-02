@@ -434,7 +434,7 @@ class Hyperparameters:
     warmup_iters : int = 0
     cooldown_iters : int = 600 # number of iterations of linear warmup/cooldown for triangular or trapezoidal schedule
     weight_decay : float = 0
-    muon_lr : float = 5
+    muon_lr : float = 1
     backend : str = "identity"
     # evaluation and logging hyperparams
     val_loss_every : int = 125 # every how many steps to evaluate val loss? 0 for only at the end
