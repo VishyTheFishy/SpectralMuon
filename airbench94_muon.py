@@ -627,10 +627,11 @@ def plot_results(run_names):
     print(f"Plotting analytics for middle layer: {middle_layer}")
     
     n_runs = len(run_names)
-    # Create a grid: rows = number of runs, cols = 4 (first/last param, first/last update)
-    fig, axes = plt.subplots(nrows=n_runs, ncols=4, figsize=(20, 4 * n_runs))
+    # Create a grid: rows = number of runs, cols = 5 
+    # (first weight, last weight, first update, last update, log-barrier)
+    fig, axes = plt.subplots(nrows=n_runs, ncols=5, figsize=(25, 4 * n_runs))
     
-    # Ensure axes is a 2D array even if there's only 1 run (though here we expect 12)
+    # Ensure axes is a 2D array even if there's only 1 run
     if n_runs == 1:
         axes = np.expand_dims(axes, axis=0)
 
@@ -639,6 +640,7 @@ def plot_results(run_names):
         
         weight_spectra = data[middle_layer]["param"]   # Shape: [Steps, SingularValues]
         update_spectra = data[middle_layer]["update"]  # Shape: [Steps, SingularValues]
+        tangent_pct = data[middle_layer]["tangent_proj_percent"] # Shape: [Steps]
         
         # Grab first [0] and last [-1] spectra
         first_weight = weight_spectra[0].numpy()
@@ -666,6 +668,11 @@ def plot_results(run_names):
         axes[i, 3].plot(last_update, label=run, linewidth=2, color='red')
         axes[i, 3].set_title(f"{run}\nLast Update Spectrum")
         axes[i, 3].grid(True, linestyle="--", alpha=0.5)
+
+        # 5. Log-Barrier (Tangent Projection)
+        axes[i, 4].plot(tangent_pct.numpy(), label=run, linewidth=2, color='purple')
+        axes[i, 4].set_title(f"{run}\nLog-Barrier of Update")
+        axes[i, 4].grid(True, linestyle="--", alpha=0.5)
         
         # Only set X-labels on the bottom row to keep it clean
         if i == n_runs - 1:
@@ -673,12 +680,12 @@ def plot_results(run_names):
             axes[i, 1].set_xlabel("Singular Value Index")
             axes[i, 2].set_xlabel("Singular Value Index")
             axes[i, 3].set_xlabel("Singular Value Index")
+            axes[i, 4].set_xlabel("Tracking Step")
 
     plt.tight_layout()
     plt.savefig("optimizer_ablation_comparison.png", dpi=300)
     print("Saved comparison plots to 'optimizer_ablation_comparison.png'")
     plt.show()
-
 
 if __name__ == "__main__":
     model = CifarNet().cuda().to(memory_format=torch.channels_last)
