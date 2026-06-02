@@ -428,15 +428,15 @@ class Hyperparameters:
     input_bin : str = 'data/fineweb10B/fineweb_train_*.bin' # input .bin to train on
     input_val_bin : str = 'data/fineweb10B/fineweb_val_*.bin' # input .bin to eval validation loss on
     # optimization hyperparams
-    optim : str = "AdamW"
+    optim : str = "Muon"
     batch_size : int = 8 # batch size, in sequences, across all devices
     sequence_length : int = 64*1024 # sequence length, in tokens
     num_iterations : int = 1530 # number of iterations to run
-    warmup_iters : int = 0
+    warmup_iters : int = 250
     cooldown_iters : int = 600 # number of iterations of linear warmup/cooldown for triangular or trapezoidal schedule
     weight_decay : float = 0
     muon_lr : float = 1
-    backend : str = "identity"
+    backend : str = "newtonschulz5"
     # evaluation and logging hyperparams
     val_loss_every : int = 125 # every how many steps to evaluate val loss? 0 for only at the end
     val_tokens : int = 10485760 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
@@ -623,30 +623,30 @@ for step in range(args.num_iterations + 1):
         train_loss = loss.detach()
     for p in model.parameters():
         p.grad /= train_accumulation_steps
-    if step % 100 == 0:
+    """if step % 100 == 0:
         p_origs = []
         for i, p in enumerate(matrix_params):
             p_svds = torch.linalg.svdvals(p.detach().float())
             run.log({f"p_erank{i}": compute_effective_rank(p_svds).item()}, step=step)
             g_svds = torch.linalg.svdvals(p.grad.detach().float())
             run.log({f"g_erank{i}": compute_effective_rank(g_svds).item()}, step=step)
-            p_origs.append(p.detach().clone())
+            p_origs.append(p.detach().clone())"""
 
         
     # momentum warmup for Muon
-    #frac = min(step/300, 1)
-    #optimizer3.param_groups[0]['momentum'] = (1 - frac) * 0.85 + frac * 0.95
+    frac = min(step/300, 1)
+    optimizer3.param_groups[0]['momentum'] = (1 - frac) * 0.85 + frac * 0.95
     # step the optimizers and schedulers
     for opt, sched in zip(optimizers, schedulers):
         opt.step()
         sched.step()
     # null the gradients
     model.zero_grad(set_to_none=True)
-    if step % 100 == 0:
+    """if step % 100 == 0:
         for i, p in enumerate(matrix_params):
             update = p.detach() - p_origs[i]
             u_svds = torch.linalg.svdvals(update.detach().float())
-            run.log({f"u_erank{i}": compute_effective_rank(u_svds).item()}, step=step)
+            run.log({f"u_erank{i}": compute_effective_rank(u_svds).item()}, step=step)"""
             
 
     # --------------- TRAINING SECTION END -------------------
