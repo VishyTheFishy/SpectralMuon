@@ -428,10 +428,11 @@ class Hyperparameters:
     input_bin : str = 'data/fineweb10B/fineweb_train_*.bin' # input .bin to train on
     input_val_bin : str = 'data/fineweb10B/fineweb_val_*.bin' # input .bin to eval validation loss on
     # optimization hyperparams
+    optim : str = "AdamW"
     batch_size : int = 8 # batch size, in sequences, across all devices
     sequence_length : int = 64*1024 # sequence length, in tokens
     num_iterations : int = 1530 # number of iterations to run
-    warmup_iters : int = 0
+    warmup_iters : int = 250
     cooldown_iters : int = 600 # number of iterations of linear warmup/cooldown for triangular or trapezoidal schedule
     weight_decay : float = 0
     muon_lr : float = 1
@@ -528,7 +529,10 @@ optimizer2 = torch.optim.Adam([raw_model.lm_head.weight], lr=0.008, betas=(0.8, 
 params = list(raw_model.transformer.h.parameters())
 matrix_params = [p for p in params if p.ndim == 2]
 scalar_params = [p for p in params if p.ndim < 2] + [raw_model.skip_weights]
-optimizer3 = Muon(matrix_params, lr=args.muon_lr, backend = args.backend, momentum=0.95)
+if (args.optim == "Muon"):
+    optimizer3 = Muon(matrix_params, lr=args.muon_lr, backend = args.backend, momentum=0.95)
+else:
+    optimizer3 = torch.optim.AdamW(matrix_params, lr=args.muon_lr, lr=0.0018, betas=(0.9, 0.95))
 optimizer4 = torch.optim.Adam(scalar_params, lr=0.04, betas=(0.8, 0.95), fused=True) # note that this learning rate is neither sensitive nor tuned
 optimizers = [optimizer1, optimizer2, optimizer3, optimizer4]
 # learning rate decay scheduler (linear warmup and cooldown)
@@ -619,15 +623,32 @@ for step in range(args.num_iterations + 1):
         train_loss = loss.detach()
     for p in model.parameters():
         p.grad /= train_accumulation_steps
+    if step % 100 == 0:
+        p_origs = []
+        for i, p in enumerate(matrix_params):
+            p_svds = torch.linalg.svdvals(p.detach().float())
+            run.log({f"p_erank{i}": compute_effective_rank(p_svds).item()}, step=step)
+            g_svds = torch.linalg.svdvals(p.grad.detach().float())
+            run.log({f"g_erank{i}": compute_effective_rank(g_svds).item()}, step=step)
+            p_origs.append(p.detach().clone())
+
+        
     # momentum warmup for Muon
-    frac = min(step/300, 1)
-    optimizer3.param_groups[0]['momentum'] = (1 - frac) * 0.85 + frac * 0.95
+    #frac = min(step/300, 1)
+    #optimizer3.param_groups[0]['momentum'] = (1 - frac) * 0.85 + frac * 0.95
     # step the optimizers and schedulers
     for opt, sched in zip(optimizers, schedulers):
         opt.step()
         sched.step()
     # null the gradients
     model.zero_grad(set_to_none=True)
+    if step % 100 == 0:
+        for i, p in enumerate(matrix_params):
+            update = p.detach() - p_origs[i]
+            u_svds = torch.linalg.svdvals(update.detach().float())
+            run.log({f"u_erank{i}": compute_effective_rank(u_svds).item()}, step=step)
+            
+
     # --------------- TRAINING SECTION END -------------------
     # everything that follows now is just diagnostics, prints, logging, etc.
 
