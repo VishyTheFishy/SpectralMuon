@@ -288,7 +288,7 @@ def batch_crop(images, crop_size):
     return images_out
 
 class CifarLoader:
-    def __init__(self, path, train=True, batch_size=500, aug=None, skew=1):
+    def __init__(self, path, train=True, batch_size=500, aug=None, skew=None):
         data_path = os.path.join(path, "train.pt" if train else "test.pt")
         if not os.path.exists(data_path):
             dset = torchvision.datasets.CIFAR10(path, download=True, train=train)
