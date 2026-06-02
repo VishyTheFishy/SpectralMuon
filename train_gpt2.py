@@ -435,7 +435,7 @@ class Hyperparameters:
     warmup_iters : int = 250
     cooldown_iters : int = 600 # number of iterations of linear warmup/cooldown for triangular or trapezoidal schedule
     weight_decay : float = 0
-    muon_lr : float = 1
+    muon_lr : float = .05
     backend : str = "newtonschulz5"
     # evaluation and logging hyperparams
     val_loss_every : int = 125 # every how many steps to evaluate val loss? 0 for only at the end
@@ -530,8 +530,10 @@ params = list(raw_model.transformer.h.parameters())
 matrix_params = [p for p in params if p.ndim == 2]
 scalar_params = [p for p in params if p.ndim < 2] + [raw_model.skip_weights]
 if (args.optim == "Muon"):
+    print("Using Muon")
     optimizer3 = Muon(matrix_params, lr=args.muon_lr, backend = args.backend, momentum=0.95)
 else:
+    print("Using AdamW")
     optimizer3 = torch.optim.AdamW(matrix_params, lr=0.0018, betas=(0.9, 0.95))
 optimizer4 = torch.optim.Adam(scalar_params, lr=0.04, betas=(0.8, 0.95), fused=True) # note that this learning rate is neither sensitive nor tuned
 optimizers = [optimizer1, optimizer2, optimizer3, optimizer4]
