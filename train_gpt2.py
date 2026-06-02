@@ -54,25 +54,6 @@ def zeropower_via_newtonschulz5(G, steps=10, eps=1e-7):
         X = X.T
     return X
 
-def targeted_newtonschulz5(G, steps:int = 3, tau: float = 1.):
-    assert G.ndim >= 2
-    X = G.bfloat16()
-    if G.size(-1) > G.size(-2):
-        X = X.mT
-    n = X.size(-1)
-    I = torch.eye(n, dtype=X.dtype, device=X.device) 
-    M = X.mT @ X - tau**2 * I
-    signedM = zeropower_via_newtonschulz5(M, steps)
-    projBot = 0.5 * (I - signedM)
-    projTop = 0.5 * (I + signedM)
-    nsX = zeropower_via_newtonschulz5(X, steps)
-    nsBot = nsX @ projBot + X @ projTop
-    nsTop = X @ projBot + nsX @ projTop
-    if G.size(-1) > G.size(-2):
-        nsBot = nsBot.mT
-        nsTop = nsTop.mT
-    return nsTop #(nsBot, nsTop)
-
 def targeted_top_newtonschulz5(G, steps:int = 3, tau: float = 1e-3):
     assert G.ndim >= 2
     X = G.bfloat16()
@@ -107,6 +88,10 @@ def targeted_bot_newtonschulz5(G, steps:int = 3, tau: float = 1.):
         nsBot = nsBot.mT
     return nsBot
 
+def identity(G, steps:int = 3):
+    return G
+
+
 
 def compute_effective_rank(svds):
     nuc = svds.sum()
@@ -117,7 +102,7 @@ def compute_effective_rank(svds):
     return torch.exp((-p*torch.log(p)).sum())
 
 
-zeropower_backends = dict(svd=zeropower_via_svd, newtonschulz5=zeropower_via_newtonschulz5, targeted_top=targeted_top_newtonschulz5, targeted_bot=targeted_bot_newtonschulz5, identity=torch.nn.Identity())
+zeropower_backends = dict(svd=zeropower_via_svd, newtonschulz5=zeropower_via_newtonschulz5, targeted_top=targeted_top_newtonschulz5, targeted_bot=targeted_bot_newtonschulz5, identity=identity)
 
 class Muon(torch.optim.Optimizer):
     """
@@ -180,9 +165,6 @@ class Muon(torch.optim.Optimizer):
                     buf.mul_(momentum).add_(g)
                     g = g.add(buf, alpha=momentum) if group['nesterov'] else buf
                     g = zeropower_backend(g, steps=group['backend_steps'])
-                    with open("top3_update_svds.txt", 'a') as file:
-                        u_svds = torch.linalg.svdvals(g.detach().float())
-                        file.write(str(u_svds))
                     g *= max(1, g.size(0)/g.size(1))**0.5
                     if self._step % 100 == 0:
                         u_svds = torch.linalg.svdvals(g.detach().float())
@@ -453,7 +435,7 @@ class Hyperparameters:
     cooldown_iters : int = 600 # number of iterations of linear warmup/cooldown for triangular or trapezoidal schedule
     weight_decay : float = 0
     muon_lr : float = .05
-    backend : str = "targeted_top"
+    backend : str = "identity"
     # evaluation and logging hyperparams
     val_loss_every : int = 125 # every how many steps to evaluate val loss? 0 for only at the end
     val_tokens : int = 10485760 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
