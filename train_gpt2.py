@@ -432,7 +432,7 @@ class Hyperparameters:
     batch_size : int = 8 # batch size, in sequences, across all devices
     sequence_length : int = 64*1024 # sequence length, in tokens
     num_iterations : int = 1530 # number of iterations to run
-    warmup_iters : int = 250
+    warmup_iters : int = 0
     cooldown_iters : int = 600 # number of iterations of linear warmup/cooldown for triangular or trapezoidal schedule
     weight_decay : float = 0
     muon_lr : float = 1
