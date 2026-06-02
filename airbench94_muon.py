@@ -58,8 +58,8 @@ def targeted_newtonschulz5(G, steps:int = 3, tau: float = 1., return_top: bool =
     projBot = 0.5 * (I - signedM)
     projTop = 0.5 * (I + signedM)
     nsX = zeropower_via_newtonschulz5(X, steps)
-    nsBot = tau * nsX @ projBot + X @ projTop
-    nsTop = X @ projBot + tau * nsX @ projTop
+    nsBot = nsX @ projBot + (1 / tau) * X @ projTop
+    nsTop = (1 / tau) * X @ projBot + nsX @ projTop)
     if G.size(-1) > G.size(-2):
         nsBot = nsBot.mT
         nsTop = nsTop.mT
@@ -613,9 +613,6 @@ def train_run(run_name, opt_config, model):
 
 def plot_results(run_names):
     """Generates comparison plots for the ablation runs."""
-    # Widened figure to accommodate 3 plots
-    plt.figure(figsize=(18, 5))
-    
     # Load sample data to determine the layers
     sample_data = torch.load(f"{run_names[0]}_spectra.pt", weights_only=False)
     conv_layers = [k for k in sample_data.keys() if "conv" in k]
@@ -628,57 +625,54 @@ def plot_results(run_names):
     middle_layer_idx = len(conv_layers) // 2
     middle_layer = conv_layers[middle_layer_idx]
     print(f"Plotting analytics for middle layer: {middle_layer}")
-        
-    # --- Plot 1: Average Tangent Projection Percentage (All Layers) ---
-    plt.subplot(1, 3, 1)
-    for run in run_names:
-        data = torch.load(f"{run}_spectra.pt", weights_only=False)
-        
-        layer_pcts = []
-        for layer in conv_layers:
-            layer_pcts.append(data[layer]["tangent_proj_percent"])
-            
-        # Stack all layer tensors and take the mean across the layer dimension (dim=0)
-        avg_tangent_pct = torch.stack(layer_pcts).mean(dim=0).numpy()
-        plt.plot(avg_tangent_pct, label=run, alpha=0.8)
     
-    plt.title("Average Tangent Projection Percentage\n(Mean of All Conv Layers)")
-    plt.xlabel("Tracking Step (SVD Sample)")
-    plt.ylabel("Log-Barrier of Update in Tangent Space")
-    plt.grid(True, linestyle="--", alpha=0.5)
-    plt.legend()
+    n_runs = len(run_names)
+    # Create a grid: rows = number of runs, cols = 4 (first/last param, first/last update)
+    fig, axes = plt.subplots(nrows=n_runs, ncols=4, figsize=(20, 4 * n_runs))
+    
+    # Ensure axes is a 2D array even if there's only 1 run (though here we expect 12)
+    if n_runs == 1:
+        axes = np.expand_dims(axes, axis=0)
 
-    # --- Plot 2: Final Update Spectrum of a Middle Layer ---
-    plt.subplot(1, 3, 2)
-    for run in run_names:
+    for i, run in enumerate(run_names):
         data = torch.load(f"{run}_spectra.pt", weights_only=False)
-        update_spectra = data[middle_layer]["update"] # Shape: [Steps, SingularValues]
         
-        # Grab the spectrum at the final recorded step (-1)
-        final_update_spectrum = update_spectra[0].numpy()
-        plt.plot(final_update_spectrum, label=run, linewidth=2)
+        weight_spectra = data[middle_layer]["param"]   # Shape: [Steps, SingularValues]
+        update_spectra = data[middle_layer]["update"]  # Shape: [Steps, SingularValues]
         
-    plt.title(f"First Singular Values of the Update\n({middle_layer})")
-    plt.xlabel("Singular Value Index")
-    plt.ylabel("Magnitude")
-    plt.grid(True, linestyle="--", alpha=0.5)
-    plt.legend()
-
-    # --- Plot 3: Final Weight Spectrum of a Middle Layer ---
-    plt.subplot(1, 3, 3)
-    for run in run_names:
-        data = torch.load(f"{run}_spectra.pt", weights_only=False)
-        weight_spectra = data[middle_layer]["param"] # Shape: [Steps, SingularValues]
+        # Grab first [0] and last [-1] spectra
+        first_weight = weight_spectra[0].numpy()
+        last_weight = weight_spectra[-1].numpy()
+        first_update = update_spectra[0].numpy()
+        last_update = update_spectra[-1].numpy()
         
-        # Grab the spectrum of the weights at the final recorded step (-1)
-        final_weight_spectrum = weight_spectra[0].numpy()
-        plt.plot(final_weight_spectrum, label=run, linewidth=2)
+        # 1. First Weight Spectrum
+        axes[i, 0].plot(first_weight, label=run, linewidth=2, color='blue')
+        axes[i, 0].set_title(f"{run}\nFirst Weight Spectrum")
+        axes[i, 0].grid(True, linestyle="--", alpha=0.5)
+        axes[i, 0].set_ylabel("Magnitude")
         
-    plt.title(f"First Singular Values of the Weight Matrix\n({middle_layer})")
-    plt.xlabel("Singular Value Index")
-    plt.ylabel("Magnitude")
-    plt.grid(True, linestyle="--", alpha=0.5)
-    plt.legend()
+        # 2. Last Weight Spectrum
+        axes[i, 1].plot(last_weight, label=run, linewidth=2, color='orange')
+        axes[i, 1].set_title(f"{run}\nLast Weight Spectrum")
+        axes[i, 1].grid(True, linestyle="--", alpha=0.5)
+        
+        # 3. First Update Spectrum
+        axes[i, 2].plot(first_update, label=run, linewidth=2, color='green')
+        axes[i, 2].set_title(f"{run}\nFirst Update Spectrum")
+        axes[i, 2].grid(True, linestyle="--", alpha=0.5)
+        
+        # 4. Last Update Spectrum
+        axes[i, 3].plot(last_update, label=run, linewidth=2, color='red')
+        axes[i, 3].set_title(f"{run}\nLast Update Spectrum")
+        axes[i, 3].grid(True, linestyle="--", alpha=0.5)
+        
+        # Only set X-labels on the bottom row to keep it clean
+        if i == n_runs - 1:
+            axes[i, 0].set_xlabel("Singular Value Index")
+            axes[i, 1].set_xlabel("Singular Value Index")
+            axes[i, 2].set_xlabel("Singular Value Index")
+            axes[i, 3].set_xlabel("Singular Value Index")
 
     plt.tight_layout()
     plt.savefig("optimizer_ablation_comparison.png", dpi=300)
@@ -693,12 +687,24 @@ if __name__ == "__main__":
     
     train_run("warmup", {"type": "sgd"}, model)
     
+    tau_values = [0.1, 0.5, 1., 5., 10.]
+    
+    # 1. Tracked SVD and 2. Regular Muon
     configurations = [
         {"name": "Tracked_SGD", "config": {"type": "sgd"}},
-        {"name": "Muon_Standard", "config": {"type": "muon"}},
-        {"name": "Muon_Targeted_Bot", "config": {"type": "muon_targeted", "tau": 0.5, "return_top": False}},
-        {"name": "Muon_Targeted_Top", "config": {"type": "muon_targeted", "tau": 0.5, "return_top": True}}
+        {"name": "Muon_Standard", "config": {"type": "muon"}}
     ]
+    
+    # 3. Targeted Muon Top and Bottom for n values of tau
+    for tau in tau_values:
+        configurations.append({
+            "name": f"Muon_Targeted_Bot_tau{tau}", 
+            "config": {"type": "muon_targeted", "tau": tau, "return_top": False}
+        })
+        configurations.append({
+            "name": f"Muon_Targeted_Top_tau{tau}", 
+            "config": {"type": "muon_targeted", "tau": tau, "return_top": True}
+        })
 
     run_names = []
     for cfg in configurations:
