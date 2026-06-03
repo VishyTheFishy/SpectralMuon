@@ -674,7 +674,7 @@ if __name__ == "__main__":
     model.compile(mode="max-autotune")
     print_columns(logging_columns_list, is_head=True)
     
-    train_run("warmup", {"type": "sgd"}, model)
+    #train_run("warmup", {"type": "sgd"}, model)
     
     tau_values = [0.1, 0.5, 1., 5., 10.]
     configurations = []
