@@ -31,7 +31,6 @@ torch.backends.cudnn.benchmark = True
 #############################################
 #               Muon optimizer              #
 #############################################
-"""
 def zeropower_via_newtonschulz5(G, steps=3, eps=1e-7):
     """
     Newton-Schulz iteration to compute the zeroth power / orthogonalization of G. We opt to use a
@@ -110,7 +109,7 @@ def targeted_newtonschulz5(G, steps:int = 7, tau: float = 1., return_top: bool =
         nsBot = nsBot.mT
         nsTop = nsTop.mT
     return nsTop if return_top else nsBot
-
+"""
 # project Y onto isospectral manifold tangent space at X
 def project_onto_tangent_space(X: torch.Tensor, Y: torch.Tensor, tol: float = 1e-7) -> torch.Tensor:
     orig_shape = X.shape
