@@ -677,12 +677,12 @@ if __name__ == "__main__":
     train_run("warmup", {"type": "sgd"}, model)
     
     tau_values = [0.1, 0.5, 1., 5., 10.]
-    
+    configurations = []
     # 1. Tracked SVD and 2. Regular Muon
-    configurations = [
-        {"name": "Tracked_SGD", "config": {"type": "sgd"}},
-        {"name": "Muon_Standard", "config": {"type": "muon"}}
-    ]
+    #configurations = [
+    #    {"name": "Tracked_SGD", "config": {"type": "sgd"}},
+    #    {"name": "Muon_Standard", "config": {"type": "muon"}}
+    #]
     
     # 3. Targeted Muon Top and Bottom for n values of tau
     for tau in tau_values:
