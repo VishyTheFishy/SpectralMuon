@@ -1,6 +1,6 @@
 # Muon Optimizer: Targeted Newton-Schulz and Spectral Tracking
 
-This repository contains an experimental extension of the Muon optimizer based on the Airbench94 CIFAR-10 framework (https://github.com/KellerJordan/cifar10-airbench) and the NanoGPT speedrunning framework (https://github.com/KellerJordan/modded-nanogpt). It is designed to track optimizer metrics, analyze gradient spectra, and test novel "targeted" variants of the Newton-Schulz iteration.
+This repository contains an experimental extension of the Muon optimizer based on the Airbench94 CIFAR-10 framework (https://github.com/KellerJordan/cifar10-airbench) and the NanoGPT speedrunning framework (https://github.com/KellerJordan/modded-nanogpt). It is designed to track optimizer metrics, analyze gradient spectra, and test the novel "targeted" variant of the Newton-Schulz iteration.
 
 ## Overview
 
