@@ -19,12 +19,8 @@ from torch import nn
 import torch.nn.functional as F
 import torchvision
 import torchvision.transforms as T
-import matplotlib.pyplot as plt
 import numpy as np
 
-# Capture code for logging if needed
-with open(sys.argv[0]) as f:
-    code = f.read()
 
 torch.backends.cudnn.benchmark = True
 
@@ -70,11 +66,8 @@ def targeted_newtonschulz5(G, steps:int = 7, tau: float = 1., return_top: bool =
 def project_onto_tangent_space(X: torch.Tensor, Y: torch.Tensor, tol: float = 1e-7) -> torch.Tensor:
     orig_shape = X.shape
     orig_dtype = X.dtype  # Remember if it was float16/half
-    
-    # Cast to float32 to prevent PyTorch CUDA SVD Half-precision crash
     X = X.float()
     Y = Y.float()
-    
     if X.ndim == 1:
         X = X.reshape(-1, 1)
         Y = Y.reshape(-1, 1)
@@ -83,13 +76,10 @@ def project_onto_tangent_space(X: torch.Tensor, Y: torch.Tensor, tol: float = 1e
     Y_2d = Y.reshape(Y.shape[0], -1)
         
     m, n = X_2d.shape
-    
     U, S, Vh = torch.linalg.svd(X_2d, full_matrices=True)
     V = Vh.mH 
     Y_tilde = U.mH @ Y_2d @ V 
-    
     Z_tilde = torch.zeros_like(Y_tilde)
-    
     S_pad_m = F.pad(S, (0, max(0, m - len(S))))
     S_pad_n = F.pad(S, (0, max(0, n - len(S))))
     
@@ -112,7 +102,7 @@ def project_onto_tangent_space(X: torch.Tensor, Y: torch.Tensor, tol: float = 1e
     
     result = (U @ Z_tilde @ Vh).reshape(orig_shape)
     
-    # Cast back to the original datatype (e.g. float16) before returning
+    # Cast back to the original datatype before returning
     return result.to(orig_dtype)
 
 class TrackedSGD(torch.optim.Optimizer):
@@ -574,7 +564,6 @@ def train_run(run_name, opt_config, model):
                 if name not in run_spectra_data:
                     run_spectra_data[name] = {"grad": [], "param": [], "update": [], "tangent_proj_percent": []}
                 
-                # BUGFIX: Use torch.stack instead of torch.cat to preserve the 2D [Steps, S] shape per epoch
                 run_spectra_data[name]["grad"].append(torch.stack(state["spectra_history"]["orig_grad"]))
                 run_spectra_data[name]["param"].append(torch.stack(state["spectra_history"]["param"]))
                 run_spectra_data[name]["update"].append(torch.stack(state["spectra_history"]["update"]))
@@ -604,70 +593,6 @@ def train_run(run_name, opt_config, model):
     print(f"Saved run spectra to {run_name}_spectra.pt")
     return tta_val_acc
 
-def create_and_save_plot(data, title, xlabel, ylabel, filename, color):
-    """Helper function to create and save individual plots safely."""
-    plt.figure(figsize=(6, 4))
-    plt.plot(data, linewidth=2, color=color)
-    plt.title(title)
-    plt.grid(True, linestyle="--", alpha=0.5)
-    plt.ylabel(ylabel)
-    plt.xlabel(xlabel)
-    plt.tight_layout()
-    plt.savefig(filename, dpi=300)
-    plt.close()
-
-def plot_results(run_names):
-    """Generates comparison plots for the ablation runs and saves them individually."""
-    # Ensure our output directory exists
-    output_dir = "ablation_plots"
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # Load sample data to determine the layers
-    sample_data = torch.load(f"{run_names[0]}_spectra.pt", weights_only=False)
-    conv_layers = [k for k in sample_data.keys() if "conv" in k]
-    
-    # Ensure we actually found convolutional layers to avoid crashes
-    if not conv_layers:
-        conv_layers = list(sample_data.keys())
-        
-    # Pick the layer right in the middle of our list
-    middle_layer_idx = len(conv_layers) // 2
-    middle_layer = conv_layers[middle_layer_idx]
-    print(f"Plotting analytics for middle layer: {middle_layer} inside '{output_dir}/'")
-
-    for run in run_names:
-        data = torch.load(f"{run}_spectra.pt", weights_only=False)
-        
-        weight_spectra = data[middle_layer]["param"]   # Shape: [Steps, SingularValues]
-        update_spectra = data[middle_layer]["update"]  # Shape: [Steps, SingularValues]
-        tangent_pct = data[middle_layer]["tangent_proj_percent"] # Shape: [Steps]
-        
-        # Grab first [0] and last [-1] spectra
-        first_weight = weight_spectra[0].numpy()
-        last_weight = weight_spectra[-1].numpy()
-        first_update = update_spectra[0].numpy()
-        last_update = update_spectra[-1].numpy()
-        
-        # Define paths and create the 5 individual plots
-        base_title = f"{run}"
-        base_path = os.path.join(output_dir, run)
-
-        create_and_save_plot(first_weight, f"{base_title}\nFirst Weight Spectrum", 
-                             "Singular Value Index", "Magnitude", f"{base_path}_first_weight.png", 'blue')
-        
-        create_and_save_plot(last_weight, f"{base_title}\nLast Weight Spectrum", 
-                             "Singular Value Index", "Magnitude", f"{base_path}_last_weight.png", 'orange')
-        
-        create_and_save_plot(first_update, f"{base_title}\nFirst Update Spectrum", 
-                             "Singular Value Index", "Magnitude", f"{base_path}_first_update.png", 'green')
-        
-        create_and_save_plot(last_update, f"{base_title}\nLast Update Spectrum", 
-                             "Singular Value Index", "Magnitude", f"{base_path}_last_update.png", 'red')
-                             
-        create_and_save_plot(tangent_pct.numpy(), f"{base_title}\nLog-Barrier of Update", 
-                             "Tracking Step", "Metric Value", f"{base_path}_log_barrier.png", 'purple')
-
-    print(f"Saved all individual plots to '{output_dir}/'")
 
 if __name__ == "__main__":
     model = CifarNet().cuda().to(memory_format=torch.channels_last)
@@ -678,13 +603,11 @@ if __name__ == "__main__":
     
     tau_values = [0.1, 0.5, 1., 5., 10.]
     configurations = []
-    # 1. Tracked SVD and 2. Regular Muon
     configurations = [
         {"name": "Tracked_SGD", "config": {"type": "sgd"}},
         {"name": "Muon_Standard", "config": {"type": "muon"}}
     ]
     
-    # 3. Targeted Muon Top and Bottom for n values of tau
     for tau in tau_values:
         configurations.append({
             "name": f"Muon_Targeted_Bot_tau{tau}", 
@@ -695,11 +618,6 @@ if __name__ == "__main__":
             "config": {"type": "muon_targeted", "tau": tau, "return_top": True}
         })
 
-    run_names = []
     for cfg in configurations:
         print(f"\n>>> Starting Run: {cfg['name']} <<<")
         train_run(cfg["name"], cfg["config"], model)
-        run_names.append(cfg["name"])
-
-    #print("\n>>> Generating Plots <<<")
-    #plot_results(run_names)
