@@ -1,78 +1,56 @@
-# Muon: An optimizer for the hidden layers of neural networks
+# Muon Optimizer: Targeted Newton-Schulz and Spectral Tracking
 
-This repo contains an implementation of the `Muon` optimizer originally described in [this thread](https://x.com/kellerjordan0/status/1842300916864844014) and [this writeup](https://kellerjordan.github.io/posts/muon/).
+This repository contains an experimental extension of the Muon optimizer based on the Airbench94 CIFAR-10 framework (https://github.com/KellerJordan/cifar10-airbench) and the NanoGPT speedrunning framework (https://github.com/KellerJordan/modded-nanogpt). It is designed to track optimizer metrics, analyze gradient spectra, and test novel "targeted" variants of the Newton-Schulz iteration.
 
-## Installation
+## Overview
 
-```
-pip install git+https://github.com/KellerJordan/Muon
-```
+The core script trains a custom ResNet-style architecture (CifarNet) on CIFAR-10, attaining ~94% accuracy. The primary goal of this codebase is to benchmark standard SGD, standard Muon, and targeted Muon optimizers while observing how gradients and parameters behave in the isospectral manifold tangent space.
+
+## Key Features & Additions
+
+### 1. Targeted Newton-Schulz Iteration
+The standard 5th-order Newton-Schulz iteration has been expanded to support **targeted spectral projection**:
+* **`targeted_newtonschulz5`**: Modifies the iteration to shift the spectrum by a scalar `tau`. 
+* Can isolate and return the top (`return_top=True`) or bottom (`return_top=False`) spectral components of the matrix.
+
+### 2. Tangent Space Projection & Spectral Tracking
+To better understand how updates affect the network weights over time:
+* **`project_onto_tangent_space`**: A custom SVD-based utility that projects gradient updates onto the isospectral manifold tangent space of the current weight matrix.
+* **`TrackedSGD` & Updated `Muon`**: Both optimizers now support a statistical tracking mechanism. Based on `svd_prob`, the optimizers periodically compute and store:
+    * Original Gradient SVD spectrum.
+    * Parameter SVD spectrum.
+    * Update SVD spectrum.
+    * Tangent Projection Metric (measuring how much of the update lies in the tangent space).
+
+### 3. Configurable Data Skew
+The `CifarLoader` now includes a `skew` parameter. When provided, it artificially imbalances the CIFAR-10 training set according to a power-law distribution, allowing researchers to evaluate optimizer robustness against long-tail class distributions.
+
+### 4. Multi-Configuration Testbed
+Instead of a single execution loop, the runner automatically sequences through several optimization strategies in a single run:
+* **Tracked SGD** (Baseline)
+* **Muon Standard**
+* **Muon Targeted (Bot & Top)** across various `tau` thresholds (`0.1`, `0.5`, `1.0`, `5.0`, `10.0`).
+
+### 5. GPT-2 Training Enhancements (train_gpt2_new.py)
+The GPT-2 training script has been updated with several new features to support tracking and targeted projection:
+* **Weights & Biases (WandB) Integration:** The training script now initializes a `wandb` run to track hyperparameter configurations and log metrics during training. 
+* **Spectral Tracking & Effective Rank:** A `compute_effective_rank(svds)` function was added to compute the effective rank of singular values. These metrics for parameters, gradients, and updates are now logged to WandB every 100 steps inside the Muon optimizer's `step()` method.
+* **Targeted Newton-Schulz Backends:** The zero-power approximation mappings have been expanded. The script now includes `targeted_top_newtonschulz5`, `targeted_bot_newtonschulz5`, and an `identity` pass-through, augmenting the original `svd` and `newtonschulz5` backends.
+* **Optimizer Toggling & Hyperparameters:** The `Hyperparameters` dataclass was refactored to allow users to toggle between `Muon` and `AdamW` optimizers (`args.optim`). It also introduces explicit settings for `muon_lr` and `backend`, while increasing the `warmup_iters` to `250` (up from `0`).
 
 ## Usage
 
-Muon is an optimizer for the hidden weights of a neural network.
-Other parameters, such as embeddings, classifier heads, and hidden gains/biases should be optimized using standard AdamW.
-Muon should be used as follows:
+Run the scripts directly via Python. They require PyTorch 2.4.1+ and a CUDA-enabled GPU (optimally an A100/H100 for benchmark timings).
 
-```python
-# optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.90, 0.95), weight_decay=0.01)
-
-# To replace the above, do the following:
-
-from muon import MuonWithAuxAdam
-hidden_weights = [p for p in model.body.parameters() if p.ndim >= 2]
-hidden_gains_biases = [p for p in model.body.parameters() if p.ndim < 2]
-nonhidden_params = [*model.head.parameters(), *model.embed.parameters()]
-param_groups = [
-    dict(params=hidden_weights, use_muon=True,
-         lr=0.02, weight_decay=0.01),
-    dict(params=hidden_gains_biases+nonhidden_params, use_muon=False,
-         lr=3e-4, betas=(0.9, 0.95), weight_decay=0.01),
-]
-optimizer = MuonWithAuxAdam(param_groups)
+**For CIFAR-10 ResNet:**
+```bash
+python airbench94_muon_new.py
 ```
+**For NanoGPT-2:**
 
-You'll have to replace `model.body`, `model.head`, and `model.embed` with whatever is appropriate for your model.
-E.g., for a ConvNet, you should use Muon to optimize all the convolutional filters except the first one, and AdamW to optimize everything else.
 
-## Example usage
 
-[Example use in the NanoGPT speedrun](https://github.com/KellerJordan/modded-nanogpt/blob/master/records/052525_MuonWithAuxAdamExample/b01550f9-03d8-4a9c-86fe-4ab434f1c5e0.txt#L470)
-
-[Example use in the CIFAR-10 speedrun](https://github.com/KellerJordan/cifar10-airbench/blob/28bff5f5b31e95aa45b5b20e1f48baf1ed98d5f6/airbench94_muon.py#L362)
-
-## Hyperparameter tuning
-
-Typically, the default values of momentum (0.95), nesterov (True), and ns_steps (5) work well. Only the learning rate and weight decay must be tuned.
-The learning rate should have built-in muP scaling: That is, as you scale up the model size, you shouldn't need to retune it.
-
-## Benchmarks
-
-For a comparison between AdamW, Shampoo, SOAP, and Muon for training a 124M-parameter transformer, see [here](https://github.com/KellerJordan/modded-nanogpt/tree/master/records/102924_Optimizers).
-
-## Accomplishments
-
-* [Lowered the record for training to 94% on CIFAR-10 from 3.3 A100-seconds to 2.6 A100-seconds](https://github.com/KellerJordan/cifar10-airbench)
-* [Used to train a transformer to GPT-2 (XL) performance in $175 of compute](https://x.com/kellerjordan0/status/1850995958697308307)
-* [Improved the training speed record for attaining GPT-2 (small) performance by a factor of 1.35x](https://x.com/kellerjordan0/status/1842300916864844014)
-* [Used by the Kimi.ai frontier lab for scaled LLM training](https://x.com/Kimi_Moonshot/status/1893379158472044623)
-* [Ashish Vaswani's lab essential.ai showed that Muon is especially good for training with large batch size](https://arxiv.org/abs/2505.02222)
-
-## More learning resources and results about Muon
-
-* [Blog post on Muon by Jianlin Su (the creator of RoPE)](https://kexue.fm/archives/10592)
-* [Blog post by Jeremy Bernstein on theoretical background of Muon](https://jeremybernste.in/writing/deriving-muon)
-* [Tech report by Kimi.ai on using Muon for scaled training](https://arxiv.org/abs/2502.16982v1)
-* [Why we chose Muon: Our chain of thought (by Jianlin Su at Kimi.ai)](https://x.com/Kimi_Moonshot/status/1897929976948965870)
-
-## Citation
-
-```bibtex
-@misc{jordan2024muon,
-  author       = {Keller Jordan and Yuchen Jin and Vlado Boza and You Jiacheng and
-                  Franz Cesista and Laker Newhouse and Jeremy Bernstein},
-  title        = {Muon: An optimizer for hidden layers in neural networks},
-  year         = {2024},
-  url          = {https://kellerjordan.github.io/posts/muon/}
-}
+```bash
+# Distributed Data Parallel is supported via torchrun
+torchrun --nproc_per_node=8 train_gpt2_new.py
 ```
