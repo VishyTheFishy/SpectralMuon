@@ -1,9 +1,3 @@
-"""
-airbench94_muon.py
-Runs in 2.59 seconds on a 400W NVIDIA A100 using torch==2.4.1
-Attains 94.01 mean accuracy (n=200 trials)
-Descends from https://github.com/tysam-code/hlb-CIFAR10/blob/main/main.py
-"""
 #############################################
 #                 Setup                     #
 #############################################
@@ -71,10 +65,8 @@ def project_onto_tangent_space(X: torch.Tensor, Y: torch.Tensor, tol: float = 1e
     if X.ndim == 1:
         X = X.reshape(-1, 1)
         Y = Y.reshape(-1, 1)
-        
     X_2d = X.reshape(X.shape[0], -1)
     Y_2d = Y.reshape(Y.shape[0], -1)
-        
     m, n = X_2d.shape
     U, S, Vh = torch.linalg.svd(X_2d, full_matrices=True)
     V = Vh.mH 
@@ -82,26 +74,20 @@ def project_onto_tangent_space(X: torch.Tensor, Y: torch.Tensor, tol: float = 1e
     Z_tilde = torch.zeros_like(Y_tilde)
     S_pad_m = F.pad(S, (0, max(0, m - len(S))))
     S_pad_n = F.pad(S, (0, max(0, n - len(S))))
-    
     sigma_i = S_pad_m.unsqueeze(1) 
     sigma_j = S_pad_n.unsqueeze(0) 
     is_same_sigma = torch.isclose(sigma_i, sigma_j, atol=tol)
     is_nonzero = sigma_i > tol
-    
     mask_distinct = ~is_same_sigma
     mask_repeated_nonzero = is_same_sigma & is_nonzero
     Z_tilde = torch.where(mask_distinct, Y_tilde, Z_tilde)
-    
     max_dim = max(m, n)
     Y_tilde_sq = F.pad(Y_tilde, (0, max_dim - n, 0, max_dim - m))
     Y_tilde_skew = 0.5 * (Y_tilde_sq - Y_tilde_sq.mH)
     Y_tilde_skew = Y_tilde_skew[:m, :n]
-    
     Z_tilde = torch.where(mask_repeated_nonzero, Y_tilde_skew, Z_tilde)
     Z_tilde.diagonal().fill_(0)
-    
     result = (U @ Z_tilde @ Vh).reshape(orig_shape)
-    
     # Cast back to the original datatype before returning
     return result.to(orig_dtype)
 
