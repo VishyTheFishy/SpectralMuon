@@ -552,7 +552,7 @@ if master_process:
         project=os.environ.get("WANDB_PROJECT", "spectral-muon-nanogpt"),
         group=_group,
         name=f"{_group}-s{args.seed}",
-        config=asdict(args) | {"world_size": ddp_world_size},
+        config=asdict(args) | {"world_size": ddp_world_size, "run_id": run_id},
     )
 
 
@@ -562,6 +562,10 @@ optimizer2 = torch.optim.Adam([raw_model.lm_head.weight], lr=0.008, betas=(0.8, 
 params = list(raw_model.transformer.h.parameters())
 matrix_params = [p for p in params if p.ndim == 2]
 scalar_params = [p for p in params if p.ndim < 2] + [raw_model.skip_weights]
+# names for per-layer wandb series: "0.attn.c_q.weight" -> layer "0", type "attn.c_q"
+matrix_names = [n for n, p in raw_model.transformer.h.named_parameters() if p.ndim == 2]
+matrix_layers = [n.split('.')[0] for n in matrix_names]
+matrix_types = ['.'.join(n.split('.')[1:-1]) for n in matrix_names]
 if (args.optim == "Muon"):
     print("Using Muon")
     optimizer3 = Muon(matrix_params, lr=args.muon_lr, backend=args.backend, momentum=0.95,
@@ -699,6 +703,24 @@ for step in range(args.num_iterations + 1):
                 nonmuon_records.append(rec)
         if step % (10 * args.track_every) == 0:
             torch.save(nonmuon_records, os.path.join(logdir, 'spectra_rank0.pt'))
+    # unified wandb logging: per-matrix scalars (per layer) plus per-type averages, one log call
+    if run is not None and args.track_every > 0 and step % args.track_every == 0:
+        source = optimizer3.records if isinstance(optimizer3, Muon) else nonmuon_records
+        recs = [r for r in source if r['step'] == step]
+        metrics, avgs = {}, {}
+        for r in recs:
+            t, L = matrix_types[r['i']], matrix_layers[r['i']]
+            vals = {f'erank_{k}': compute_effective_rank(r[f'{k}_spec']).item() for k in ('p', 'g', 'm', 'u')}
+            vals['frac_above_tau'] = (r['m_spec'] > args.tau).float().mean().item()
+            for key in ('tangent_frac', 'radial_coef', 'rot_overlap', 'pre_rms'):
+                if key in r:
+                    vals[key] = r[key]
+            for k, v in vals.items():
+                metrics[f'{k}/{t}/L{L}'] = v
+                avgs.setdefault(f'{k}/{t}/avg', []).append(v)
+        if metrics:
+            metrics |= {k: sum(v) / len(v) for k, v in avgs.items()}
+            run.log(metrics, step=step)
     # null the gradients
     model.zero_grad(set_to_none=True)
     """if step % 100 == 0:
@@ -723,6 +745,10 @@ if isinstance(optimizer3, Muon):
     optimizer3.flush()
 elif master_process and nonmuon_records:
     torch.save(nonmuon_records, os.path.join(logdir, 'spectra_rank0.pt'))
+if run is not None:
+    _sp = os.path.join(logdir, 'spectra_rank0.pt')
+    if os.path.exists(_sp):
+        run.save(_sp, base_path='logs')
 
 # -------------------------------------------------------------------------
 # clean up nice
