@@ -5,6 +5,7 @@ with open(sys.argv[0]) as f:
 import uuid
 import glob
 import time
+from functools import partial
 import contextlib
 from dataclasses import dataclass
 import wandb
@@ -90,40 +91,6 @@ def targeted_conv(G, steps = 20, tau: float = 1e-3, top=True):
     return tgted
 
 
-def targeted_top_newtonschulz5(G, steps:int = 3, tau: float = 1e-3):
-    assert G.ndim >= 2
-    X = G.bfloat16()
-    if G.size(-1) > G.size(-2):
-        X = X.mT
-    n = X.size(-1)
-    I = torch.eye(n, dtype=X.dtype, device=X.device) 
-    M = X.mT @ X - tau**2 * I
-    signedM = zeropower_via_newtonschulz5(M, steps)
-    projBot = 0.5 * (I - signedM)
-    projTop = 0.5 * (I + signedM)
-    nsX = zeropower_via_newtonschulz5(X, steps)
-    nsTop = X @ projBot + nsX @ projTop
-    if G.size(-1) > G.size(-2):
-        nsTop = nsTop.mT
-    return nsTop
-
-def targeted_bot_newtonschulz5(G, steps:int = 3, tau: float = 1.):
-    assert G.ndim >= 2
-    X = G.bfloat16()
-    if G.size(-1) > G.size(-2):
-        X = X.mT
-    n = X.size(-1)
-    I = torch.eye(n, dtype=X.dtype, device=X.device) 
-    M = X.mT @ X - tau**2 * I
-    signedM = zeropower_via_newtonschulz5(M, steps)
-    projBot = 0.5 * (I - signedM)
-    projTop = 0.5 * (I + signedM)
-    nsX = zeropower_via_newtonschulz5(X, steps)
-    nsBot = nsX @ projBot + X @ projTop
-    if G.size(-1) > G.size(-2):
-        nsBot = nsBot.mT
-    return nsBot
-
 def identity(G, steps:int = 3):
     return G
 
@@ -138,11 +105,11 @@ def compute_effective_rank(svds):
     return torch.exp((-p*torch.log(p)).sum())
 
 
-zeropower_backends = dict(svd=zeropower_via_svd, newtonschulz5=zeropower_via_newtonschulz5, targeted_top=targeted_top_newtonschulz5, targeted_bot=targeted_bot_newtonschulz5, identity=identity)
+zeropower_backends = dict(svd=zeropower_via_svd, newtonschulz5=zeropower_via_newtonschulz5, targeted_top=partial(targeted_conv, top=True), targeted_bot=partial(targeted_conv, top=False), identity=identity, conv=ns_conv)
 
 class Muon(torch.optim.Optimizer):
     def __init__(self, params, lr=0.02, momentum=0.95, nesterov=True,
-                 backend='newtonschulz5', backend_steps=20, tau=0.0, arm='top',
+                 backend='conv', backend_steps=20, tau=0.0, arm='top',
                  rms_match=True, track_every=25, track_dir=None, track_k=32, track_tol=1e-8):
         defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, backend=backend,
                         backend_steps=backend_steps, tau=tau, arm=arm, rms_match=rms_match)
