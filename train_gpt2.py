@@ -137,7 +137,7 @@ zeropower_backends = dict(svd=zeropower_via_svd, newtonschulz5=zeropower_via_new
 class Muon(torch.optim.Optimizer):
     def __init__(self, params, lr=0.02, momentum=0.95, nesterov=True,
                  backend='conv', backend_steps=20, tau=0.0, arm='top',
-                 rms_match=True, track_every=25, track_dir=None, track_k=32, track_tol=1e-8):
+                 rms_match=False, track_every=25, track_dir=None, track_k=32, track_tol=1e-8):
         defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, backend=backend,
                         backend_steps=backend_steps, tau=tau, arm=arm, rms_match=rms_match)
         self._step = 0
