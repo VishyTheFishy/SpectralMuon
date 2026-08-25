@@ -549,7 +549,7 @@ if master_process:
     _group = f"{args.backend}-{args.arm}-tau{args.tau:g}" if args.backend == 'targeted' else args.backend
     run = wandb.init(
         entity=os.environ.get("WANDB_ENTITY"),
-        project=os.environ.get("WANDB_PROJECT", "spectral-muon-nanogpt"),
+        project=os.environ.get("WANDB_PROJECT", "spectral-muon-rerun"),
         group=_group,
         name=f"{_group}-s{args.seed}",
         config=asdict(args) | {"world_size": ddp_world_size, "run_id": run_id},
