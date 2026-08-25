@@ -7,7 +7,7 @@ import glob
 import time
 from functools import partial
 import contextlib
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict, fields
 import wandb
 
 
@@ -26,12 +26,12 @@ create_block_mask = torch.compile(create_block_mask, dynamic=False)
 # -----------------------------------------------------------------------------
 # Muon optimizer
 
-def zeropower_via_svd(G, steps=None):
+def zeropower_via_svd(G, steps=None, **kwargs):
     U, S, V = G.svd()
     return U @ V.T
 
 @torch.compile
-def zeropower_via_newtonschulz5(G, steps=10, eps=1e-7):
+def zeropower_via_newtonschulz5(G, steps=10, eps=1e-7, **kwargs):
     """
     Newton-Schulz iteration to compute the zeroth power / orthogonalization of G. We opt to use a
     quintic iteration whose coefficients are selected to maximize the slope at zero. For the purpose
@@ -55,7 +55,7 @@ def zeropower_via_newtonschulz5(G, steps=10, eps=1e-7):
         X = X.T
     return X
 
-def ns_conv(G, steps = 20, eps=1e-7):
+def ns_conv(G, steps = 20, eps=1e-7, **kwargs):
     assert len(G.shape) == 2
     a, b, c = (3, -3.2,  1.2)
     X = G.float()
@@ -91,7 +91,7 @@ def targeted_conv(G, steps = 20, tau: float = 1e-3, top=True):
     return tgted
 
 
-def identity(G, steps:int = 3):
+def identity(G, steps:int = 3, **kwargs):
     return G
 
 
@@ -105,7 +105,34 @@ def compute_effective_rank(svds):
     return torch.exp((-p*torch.log(p)).sum())
 
 
-zeropower_backends = dict(svd=zeropower_via_svd, newtonschulz5=zeropower_via_newtonschulz5, targeted_top=partial(targeted_conv, top=True), targeted_bot=partial(targeted_conv, top=False), identity=identity, conv=ns_conv)
+@torch.no_grad()
+def make_record(step_num, i, W, g_raw, g_mom, u, prev_topU, tol=1e-8, k=32):
+    # shared spectral record for one matrix: used by Muon's in-step hook and the
+    # main-loop tracker for torch optimizers, so all runs log identical quantities
+    rec = {'step': step_num, 'i': i, 'shape': tuple(W.shape)}
+    W = W.float()
+    Us, S, Vh = torch.linalg.svd(W, full_matrices=False)
+    rec['p_spec'] = S.cpu()
+    rec['g_spec'] = torch.linalg.svdvals(g_raw.float()).cpu()
+    rec['m_spec'] = torch.linalg.svdvals(g_mom.float()).cpu()
+    u = u.float()
+    rec['u_spec'] = torch.linalg.svdvals(u).cpu()
+    newU = prev_topU
+    if S[0] > tol:
+        d = torch.einsum('ir,ir->r', Us, u @ Vh.mH)     # d_r = u_r^T Z v_r
+        rec['drift_diag'] = d.cpu()
+        rec['tangent_frac'] = (1 - d.pow(2).sum() / u.pow(2).sum()).item()
+        rec['radial_coef'] = ((u * W).sum() / W.pow(2).sum()).item()
+        kk = min(k, Us.size(1))
+        if prev_topU is not None:
+            rec['rot_overlap'] = (prev_topU.mH @ Us[:, :kk]).pow(2).sum().div(kk).item()
+        newU = Us[:, :kk].clone()
+    else:
+        rec['skipped'] = True
+    return rec, newU
+
+
+zeropower_backends = dict(svd=zeropower_via_svd, newtonschulz5=zeropower_via_newtonschulz5, targeted=targeted_conv, identity=identity, conv=ns_conv)
 
 class Muon(torch.optim.Optimizer):
     def __init__(self, params, lr=0.02, momentum=0.95, nesterov=True,
@@ -149,26 +176,9 @@ class Muon(torch.optim.Optimizer):
                         u = u * max(1, u.size(0) / u.size(1)) ** 0.5   # legacy scale
 
                     if track:
-                        rec = {'step': self._step, 'i': i, 'shape': tuple(p.shape),
-                               'pre_rms': pre_rms.item()}
-                        W = p.float()
-                        Us, S, Vh = torch.linalg.svd(W, full_matrices=False)
-                        rec['p_spec'] = S.cpu()
-                        rec['g_spec'] = torch.linalg.svdvals(g.float()).cpu()
-                        rec['m_spec'] = torch.linalg.svdvals(mg.float()).cpu()
-                        rec['u_spec'] = torch.linalg.svdvals(u).cpu()
-                        if S[0] > self.track_tol:
-                            d = torch.einsum('ir,ir->r', Us, u @ Vh.mH)     # d_r = u_r^T Z v_r
-                            rec['drift_diag'] = d.cpu()
-                            rec['tangent_frac'] = (1 - d.pow(2).sum() / u.pow(2).sum()).item()
-                            rec['radial_coef'] = ((u * W).sum() / W.pow(2).sum()).item()
-                            k = min(self.track_k, Us.size(1))
-                            prevU = state.get('topU')
-                            if prevU is not None:
-                                rec['rot_overlap'] = (prevU.mH @ Us[:, :k]).pow(2).sum().div(k).item()
-                            state['topU'] = Us[:, :k].clone()
-                        else:
-                            rec['skipped'] = True
+                        rec, state['topU'] = make_record(self._step, i, p, g, mg, u,
+                                                         state.get('topU'), self.track_tol, self.track_k)
+                        rec['pre_rms'] = pre_rms.item()
                         self.records.append(rec)
 
                     updates_flat[curr_idx:curr_idx + p.numel()] = u.flatten()
@@ -439,14 +449,29 @@ class Hyperparameters:
     num_iterations : int = 1530 # number of iterations to run
     warmup_iters : int = 250
     cooldown_iters : int = 600 # number of iterations of linear warmup/cooldown for triangular or trapezoidal schedule
-    weight_decay : float = 0
+    weight_decay : float = 0.01 # matrix-optimizer decoupled wd; 0.01 = torch AdamW default the baseline has always run
     muon_lr : float = .05
     backend : str = "newtonschulz5"
+    backend_steps : int = 20
+    tau : float = 0.0
+    arm : str = "top"
+    rms_match : bool = True
+    seed : int = 0
+    track_every : int = 25 # spectral tracking cadence in steps; 0 disables
     # evaluation and logging hyperparams
     val_loss_every : int = 125 # every how many steps to evaluate val loss? 0 for only at the end
     val_tokens : int = 10485760 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     save_every : int = 0 # every how many steps to save the checkpoint? 0 for only at the end
 args = Hyperparameters()
+
+# minimal --key=value CLI overrides, cast to the dataclass field types
+_ftypes = {f.name: f.type for f in fields(Hyperparameters)}
+for _a in sys.argv[1:]:
+    assert _a.startswith('--') and '=' in _a, f"bad arg {_a}, expected --key=value"
+    _k, _v = _a[2:].split('=', 1)
+    assert _k in _ftypes, f"unknown hyperparameter {_k}"
+    _t = _ftypes[_k]
+    setattr(args, _k, _v.lower() in ('1', 'true') if _t == bool else _t(_v))
 
 # set up DDP (distributed data parallel). torchrun sets this env variable
 assert torch.cuda.is_available()
@@ -457,6 +482,8 @@ ddp_world_size = int(os.environ['WORLD_SIZE'])
 device = f'cuda:{ddp_local_rank}'
 torch.cuda.set_device(device)
 print(f"using device: {device}")
+torch.manual_seed(args.seed)
+torch.cuda.manual_seed_all(args.seed)
 master_process = (ddp_rank == 0) # this process will do logging, checkpointing etc.
 
 # begin logging
@@ -517,15 +544,16 @@ model = torch.compile(model)
 model = DDP(model, device_ids=[ddp_local_rank])
 raw_model = model.module # always contains the "raw" unwrapped model
 
-run = wandb.init(
-    entity="vishrut-229",
-    project="spectral-muon-nanogpt",
-    # Track hyperparameters and run metadata.
-    config={
-        "learning_rate": args.muon_lr,
-        "backend": args.backend,
-    },
-)
+run = None
+if master_process:
+    _group = f"{args.backend}-{args.arm}-tau{args.tau:g}" if args.backend == 'targeted' else args.backend
+    run = wandb.init(
+        entity=os.environ.get("WANDB_ENTITY"),
+        project=os.environ.get("WANDB_PROJECT", "spectral-muon-nanogpt"),
+        group=_group,
+        name=f"{_group}-s{args.seed}",
+        config=asdict(args) | {"world_size": ddp_world_size},
+    )
 
 
 # init the optimizer(s)
@@ -536,10 +564,13 @@ matrix_params = [p for p in params if p.ndim == 2]
 scalar_params = [p for p in params if p.ndim < 2] + [raw_model.skip_weights]
 if (args.optim == "Muon"):
     print("Using Muon")
-    optimizer3 = Muon(matrix_params, lr=args.muon_lr, backend = args.backend, momentum=0.95)
+    optimizer3 = Muon(matrix_params, lr=args.muon_lr, backend=args.backend, momentum=0.95,
+                      backend_steps=args.backend_steps, tau=args.tau, arm=args.arm,
+                      rms_match=args.rms_match, track_every=args.track_every,
+                      track_dir=(logdir if master_process else None))
 else:
     print("Using AdamW")
-    optimizer3 = torch.optim.AdamW(matrix_params, lr=0.0018, betas=(0.9, 0.95))
+    optimizer3 = torch.optim.AdamW(matrix_params, lr=0.0018, betas=(0.9, 0.95), weight_decay=args.weight_decay)
 optimizer4 = torch.optim.Adam(scalar_params, lr=0.04, betas=(0.8, 0.95), fused=True) # note that this learning rate is neither sensitive nor tuned
 optimizers = [optimizer1, optimizer2, optimizer3, optimizer4]
 # learning rate decay scheduler (linear warmup and cooldown)
@@ -556,6 +587,9 @@ def get_lr(it):
         decay_ratio = (args.num_iterations - it) / args.cooldown_iters
         return decay_ratio
 schedulers = [torch.optim.lr_scheduler.LambdaLR(opt, get_lr) for opt in optimizers]
+
+# tracking state for non-Muon matrix optimizers (e.g. AdamW): Muon tracks inside its own step
+nonmuon_records, nonmuon_topU = [], {}
 
 # Start training loop
 training_time_ms = 0
@@ -592,7 +626,8 @@ for step in range(args.num_iterations + 1):
         dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
         val_loss /= val_steps
         # log val loss to console and to logfile
-        run.log({"val_loss": val_loss}, step=step)
+        if run is not None:
+            run.log({"val_loss": val_loss}, step=step)
         print0(f'step:{step}/{args.num_iterations} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/(timed_steps-1):.2f}ms')
         # start the clock again
         torch.cuda.synchronize()
@@ -643,10 +678,27 @@ for step in range(args.num_iterations + 1):
     # momentum warmup for Muon
     frac = min(step/300, 1)
     optimizer3.param_groups[0]['momentum'] = (1 - frac) * 0.85 + frac * 0.95
+    # snapshot for non-Muon tracking: lr must be read before sched.step() advances it
+    track_now = (not isinstance(optimizer3, Muon)) and master_process \
+                and args.track_every > 0 and step % args.track_every == 0
+    if track_now:
+        lr3 = optimizer3.param_groups[0]['lr']
+        wd3 = optimizer3.param_groups[0].get('weight_decay', 0.0)
+        p_prev = [p.detach().float().clone() for p in matrix_params]
     # step the optimizers and schedulers
     for opt, sched in zip(optimizers, schedulers):
         opt.step()
         sched.step()
+    if track_now:
+        with torch.no_grad():
+            for i, p in enumerate(matrix_params):
+                # decoupled update: p_new = p_prev - lr*wd*p_prev - lr*dir  =>  recover dir exactly
+                u = (p_prev[i] - p.detach().float()) / lr3 - wd3 * p_prev[i]
+                m = optimizer3.state[p].get('exp_avg', torch.zeros_like(p))
+                rec, nonmuon_topU[i] = make_record(step, i, p_prev[i], p.grad, m, u, nonmuon_topU.get(i))
+                nonmuon_records.append(rec)
+        if step % (10 * args.track_every) == 0:
+            torch.save(nonmuon_records, os.path.join(logdir, 'spectra_rank0.pt'))
     # null the gradients
     model.zero_grad(set_to_none=True)
     """if step % 100 == 0:
@@ -661,11 +713,16 @@ for step in range(args.num_iterations + 1):
 
     #dist.all_reduce(train_loss, op=dist.ReduceOp.AVG) # all-reducing the training loss would be more correct in terms of logging, but slower
     approx_time = training_time_ms + 1000 * (time.time() - t0)
-    run.log({"train_loss": train_loss.item()}, step=step)
+    if run is not None:
+        run.log({"train_loss": train_loss.item()}, step=step)
     print0(f"step:{step+1}/{args.num_iterations} train_loss:{train_loss.item():.4f} train_time:{approx_time:.0f}ms step_avg:{approx_time/timed_steps:.2f}ms")
 
 if master_process:
     print0(f"peak memory consumption: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB")
+if isinstance(optimizer3, Muon):
+    optimizer3.flush()
+elif master_process and nonmuon_records:
+    torch.save(nonmuon_records, os.path.join(logdir, 'spectra_rank0.pt'))
 
 # -------------------------------------------------------------------------
 # clean up nice
