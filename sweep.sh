@@ -53,9 +53,16 @@ for S in 0 1; do
     run "muon-warm-s${S}"     --optim=Muon --backend=conv --rms_match=0 --warmup_iters=250 --seed=${S}
 done
 
-# ---- Not yet runnable (code missing) ----
-# NSGD endpoint: needs the nsgd backend (power-iteration spectral-norm normalize) added to zeropower_backends
-# for S in 0 1 2; do run "nsgd-s${S}" $FAM --backend=nsgd --seed=${S}; done
-# Muon+wd cells (study B4): needs decoupled wd in Muon.step
-# for S in 0 1; do run "muon-wd0.01-s${S}" --optim=Muon --backend=conv --rms_match=0 --warmup_iters=250 --weight_decay=0.01 --seed=${S}; done
-echo "queue complete."
+# ---- Tier 5: final cells + controls ----
+for S in 0 1; do
+    run "adamw-nowarm-s${S}"  --optim=AdamW --warmup_iters=0 --seed=${S}
+done
+
+for S in 0 1; do
+    run "nsgd-s${S}" --optim=Muon --backend=nsgd --rms_match=0 --warmup_iters=0 --seed=${S}
+done
+# norm-matched LR controls: global update norm matched to Muon's sqrt(768)
+run "top3e-3-lrup-s0"  --optim=Muon --backend=targeted --arm=top --tau=3e-3 --muon_lr=0.49  --rms_match=0 --warmup_iters=0 --seed=0
+run "top1e-3-lrup-s0"  --optim=Muon --backend=targeted --arm=top --tau=1e-3 --muon_lr=0.29  --rms_match=0 --warmup_iters=0 --seed=0
+run "top1e-4-lrup-s0"  --optim=Muon --backend=targeted --arm=top --tau=1e-4 --muon_lr=0.095 --rms_match=0 --warmup_iters=0 --seed=0
+run "conv-lrdown-s0"   --optim=Muon --backend=conv --muon_lr=0.005 --rms_match=0 --warmup_iters=0 --seed=0
