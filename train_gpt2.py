@@ -94,6 +94,16 @@ def targeted_conv(G, steps = 20, tau: float = 1e-3, top=True):
 def identity(G, steps:int = 3, **kwargs):
     return G
 
+def nsgd(G, steps=10, eps=1e-7, **kwargs):
+    # normalized momentum SGD: divide by spectral norm (power iteration, matmul-only)
+    X = G.float()
+    v = torch.randn(X.size(-1), device=X.device)
+    for _ in range(steps):
+        v = X.T @ (X @ v)
+        v = v / (v.norm() + eps)
+    sigma_max = (X @ v).norm()
+    return X / (sigma_max + eps)
+
 
 
 def compute_effective_rank(svds):
@@ -132,7 +142,7 @@ def make_record(step_num, i, W, g_raw, g_mom, u, prev_topU, tol=1e-8, k=32):
     return rec, newU
 
 
-zeropower_backends = dict(svd=zeropower_via_svd, newtonschulz5=zeropower_via_newtonschulz5, targeted=targeted_conv, identity=identity, conv=ns_conv)
+zeropower_backends = dict(svd=zeropower_via_svd, newtonschulz5=zeropower_via_newtonschulz5, targeted=targeted_conv, identity=identity, conv=ns_conv, nsgd=nsgd)
 
 class Muon(torch.optim.Optimizer):
     def __init__(self, params, lr=0.02, momentum=0.95, nesterov=True,
@@ -547,6 +557,8 @@ raw_model = model.module # always contains the "raw" unwrapped model
 run = None
 if master_process:
     _group = f"{args.backend}-{args.arm}-tau{args.tau:g}" if args.backend == 'targeted' else args.backend
+    if args.muon_lr != 0.05:
+        _group += f"-lr{args.muon_lr:g}"
     run = wandb.init(
         entity=os.environ.get("WANDB_ENTITY"),
         project=os.environ.get("WANDB_PROJECT", "spectral-muon-rerun"),
